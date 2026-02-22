@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline'; media-src 'self' blob:" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <title>Video Recorder</title>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col">
+
+  <div class="flex-1 flex flex-col p-6 gap-4 max-w-4xl mx-auto w-full">
+    <!-- Source selectors -->
+    <div class="flex gap-4">
+      <div class="flex-1">
+        <label class="block text-sm text-gray-400 mb-1">Screen</label>
+        <select id="screenSource" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"></select>
+      </div>
+      <div class="flex-1">
+        <label class="block text-sm text-gray-400 mb-1">Camera</label>
+        <select id="cameraSource" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"></select>
+      </div>
+      <div class="flex-1">
+        <label class="block text-sm text-gray-400 mb-1">Microphone</label>
+        <select id="audioSource" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"></select>
+      </div>
+    </div>
+
+    <!-- Preview -->
+    <div class="flex-1 bg-black overflow-hidden relative flex items-center justify-center min-h-[360px]">
+      <canvas id="compositeCanvas" class="w-full h-full object-contain"></canvas>
+      <div id="noPreview" class="absolute inset-0 flex items-center justify-center text-gray-500">
+        Select a source to start preview
+      </div>
+    </div>
+
+    <!-- Hidden video elements for feeding the canvas -->
+    <video id="screenVideo" autoplay muted playsinline class="hidden"></video>
+    <video id="cameraVideo" autoplay muted playsinline class="hidden"></video>
+
+    <!-- Audio meter -->
+    <div class="flex items-center gap-3">
+      <span class="text-sm text-gray-400 w-10">Mic</span>
+      <div class="flex-1 bg-gray-800 rounded-full h-3 overflow-hidden">
+        <div id="audioMeter" class="bg-green-500 h-full rounded-full transition-all duration-75" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="flex items-center justify-center gap-4">
+      <button id="recordBtn" class="px-6 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+        Record
+      </button>
+      <span id="timer" class="text-sm text-gray-400 font-mono w-20">00:00</span>
+      <button id="settingsBtn" class="ml-auto text-gray-400 hover:text-white transition-colors text-sm">
+        Settings
+      </button>
+    </div>
+
+    <!-- Settings panel -->
+    <div id="settingsPanel" class="hidden bg-gray-800 border border-gray-700 rounded p-4">
+      <div class="flex items-center gap-3">
+        <label class="text-sm text-gray-400 shrink-0">Save to</label>
+        <span id="folderPath" class="text-sm truncate flex-1 text-gray-300">Not set</span>
+        <button id="openFolderBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors hidden">Open</button>
+        <button id="pickFolderBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Browse</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const screenSelect = document.getElementById('screenSource');
+    const cameraSelect = document.getElementById('cameraSource');
+    const audioSelect = document.getElementById('audioSource');
+    const canvas = document.getElementById('compositeCanvas');
+    const ctx = canvas.getContext('2d');
+    const screenVideo = document.getElementById('screenVideo');
+    const cameraVideo = document.getElementById('cameraVideo');
+    const noPreview = document.getElementById('noPreview');
+    const audioMeter = document.getElementById('audioMeter');
+    const recordBtn = document.getElementById('recordBtn');
+    const timerEl = document.getElementById('timer');
+    const settingsBtn = document.getElementById('settingsBtn');
+    const settingsPanel = document.getElementById('settingsPanel');
+    const folderPathEl = document.getElementById('folderPath');
+    const openFolderBtn = document.getElementById('openFolderBtn');
+    const pickFolderBtn = document.getElementById('pickFolderBtn');
+
+    let screenStream = null;
+    let cameraStream = null;
+    let audioStream = null;
+    let mediaRecorder = null;
+    let chunks = [];
+    let recording = false;
+    let timerInterval = null;
+    let startTime = 0;
+    let audioContext = null;
+    let analyser = null;
+    let meterRAF = null;
+    let drawRAF = null;
+    let saveFolder = localStorage.getItem('saveFolder') || '';
+
+    const CANVAS_W = 1920;
+    const CANVAS_H = 1080;
+    const PIP_FRACTION = 0.25;
+    const PIP_MARGIN = 20;
+
+    canvas.width = CANVAS_W;
+    canvas.height = CANVAS_H;
+
+    // Populate device lists
+    async function enumerateDevices() {
+      try {
+        const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        tempStream.getTracks().forEach(t => t.stop());
+      } catch (e) {}
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const sources = await window.electronAPI.getSources();
+
+      screenSelect.innerHTML = '<option value="">None</option>';
+      cameraSelect.innerHTML = '<option value="">None</option>';
+      audioSelect.innerHTML = '<option value="">None</option>';
+
+      sources.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.name;
+        screenSelect.appendChild(opt);
+      });
+
+      devices.filter(d => d.kind === 'videoinput').forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${i + 1}`;
+        cameraSelect.appendChild(opt);
+      });
+
+      devices.filter(d => d.kind === 'audioinput').forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Microphone ${i + 1}`;
+        audioSelect.appendChild(opt);
+      });
+
+      if (cameraSelect.options.length > 1) cameraSelect.selectedIndex = 1;
+      if (audioSelect.options.length > 1) audioSelect.selectedIndex = 1;
+    }
+
+    async function updateScreenStream() {
+      if (screenStream) {
+        screenStream.getTracks().forEach(t => t.stop());
+        screenStream = null;
+        screenVideo.srcObject = null;
+      }
+
+      const sourceId = screenSelect.value;
+      if (!sourceId) return;
+
+      screenStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: sourceId
+          }
+        }
+      });
+      screenVideo.srcObject = screenStream;
+    }
+
+    async function updateCameraStream() {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(t => t.stop());
+        cameraStream = null;
+        cameraVideo.srcObject = null;
+      }
+
+      const deviceId = cameraSelect.value;
+      if (!deviceId) return;
+
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 }, aspectRatio: { ideal: 16 / 9 } },
+        audio: false
+      });
+      cameraVideo.srcObject = cameraStream;
+    }
+
+    async function updateAudioStream() {
+      stopAudioMeter();
+      if (audioStream) {
+        audioStream.getTracks().forEach(t => t.stop());
+        audioStream = null;
+      }
+
+      const deviceId = audioSelect.value;
+      if (!deviceId) return;
+
+      audioStream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: deviceId } },
+        video: false
+      });
+      startAudioMeter(audioStream);
+    }
+
+    function updatePreview() {
+      const hasAny = screenStream || cameraStream;
+      noPreview.classList.toggle('hidden', !!hasAny);
+      recordBtn.disabled = !hasAny || !saveFolder;
+
+      if (drawRAF) cancelAnimationFrame(drawRAF);
+      if (hasAny) drawComposite();
+    }
+
+    function drawComposite() {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+      const hasScreen = screenStream && screenVideo.videoWidth;
+      const hasCamera = cameraStream && cameraVideo.videoWidth;
+
+      if (hasScreen && hasCamera) {
+        // Screen fills canvas (letterboxed)
+        drawFit(screenVideo, 0, 0, CANVAS_W, CANVAS_H);
+        // Camera as PiP in bottom-right
+        const pipW = Math.round(CANVAS_W * PIP_FRACTION);
+        const pipH = Math.round(pipW * (cameraVideo.videoHeight / cameraVideo.videoWidth));
+        const pipX = CANVAS_W - pipW - PIP_MARGIN;
+        const pipY = CANVAS_H - pipH - PIP_MARGIN;
+        // rounded rectangle clip
+        const r = 12;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(pipX + r, pipY);
+        ctx.lineTo(pipX + pipW - r, pipY);
+        ctx.quadraticCurveTo(pipX + pipW, pipY, pipX + pipW, pipY + r);
+        ctx.lineTo(pipX + pipW, pipY + pipH - r);
+        ctx.quadraticCurveTo(pipX + pipW, pipY + pipH, pipX + pipW - r, pipY + pipH);
+        ctx.lineTo(pipX + r, pipY + pipH);
+        ctx.quadraticCurveTo(pipX, pipY + pipH, pipX, pipY + pipH - r);
+        ctx.lineTo(pipX, pipY + r);
+        ctx.quadraticCurveTo(pipX, pipY, pipX + r, pipY);
+        ctx.closePath();
+        ctx.clip();
+        ctx.drawImage(cameraVideo, pipX, pipY, pipW, pipH);
+        ctx.restore();
+        // border
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(pipX + r, pipY);
+        ctx.lineTo(pipX + pipW - r, pipY);
+        ctx.quadraticCurveTo(pipX + pipW, pipY, pipX + pipW, pipY + r);
+        ctx.lineTo(pipX + pipW, pipY + pipH - r);
+        ctx.quadraticCurveTo(pipX + pipW, pipY + pipH, pipX + pipW - r, pipY + pipH);
+        ctx.lineTo(pipX + r, pipY + pipH);
+        ctx.quadraticCurveTo(pipX, pipY + pipH, pipX, pipY + pipH - r);
+        ctx.lineTo(pipX, pipY + r);
+        ctx.quadraticCurveTo(pipX, pipY, pipX + r, pipY);
+        ctx.closePath();
+        ctx.stroke();
+      } else if (hasScreen) {
+        drawFit(screenVideo, 0, 0, CANVAS_W, CANVAS_H);
+      } else if (hasCamera) {
+        drawFit(cameraVideo, 0, 0, CANVAS_W, CANVAS_H);
+      }
+
+      drawRAF = requestAnimationFrame(drawComposite);
+    }
+
+    function drawFit(video, x, y, w, h) {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh) return;
+      const scale = Math.min(w / vw, h / vh);
+      const dw = vw * scale;
+      const dh = vh * scale;
+      const dx = x + (w - dw) / 2;
+      const dy = y + (h - dh) / 2;
+      ctx.drawImage(video, dx, dy, dw, dh);
+    }
+
+    // Audio level meter
+    function startAudioMeter(stream) {
+      audioContext = new AudioContext();
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      const data = new Uint8Array(analyser.frequencyBinCount);
+
+      function updateMeter() {
+        analyser.getByteFrequencyData(data);
+        const avg = data.reduce((a, b) => a + b, 0) / data.length;
+        const pct = Math.min(100, (avg / 128) * 100);
+        audioMeter.style.width = pct + '%';
+        audioMeter.className = `h-full rounded-full transition-all duration-75 ${pct > 70 ? 'bg-red-500' : pct > 40 ? 'bg-yellow-500' : 'bg-green-500'}`;
+        meterRAF = requestAnimationFrame(updateMeter);
+      }
+      updateMeter();
+    }
+
+    function stopAudioMeter() {
+      if (meterRAF) cancelAnimationFrame(meterRAF);
+      meterRAF = null;
+      if (audioContext) { audioContext.close(); audioContext = null; }
+      audioMeter.style.width = '0%';
+    }
+
+    // Recording
+    function toggleRecording() {
+      if (!recording) startRecording();
+      else stopRecording();
+    }
+
+    function startRecording() {
+      chunks = [];
+
+      // Capture the canvas as a video stream
+      const canvasStream = canvas.captureStream(30);
+
+      // Add audio track if available
+      if (audioStream) {
+        audioStream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
+      }
+
+      mediaRecorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm; codecs=vp9' });
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const buffer = await blob.arrayBuffer();
+        const saved = await window.electronAPI.saveVideo(buffer, saveFolder);
+        if (saved) console.log('Saved to:', saved);
+      };
+
+      mediaRecorder.start(100);
+      recording = true;
+      recordBtn.textContent = 'Stop';
+      recordBtn.classList.replace('bg-red-600', 'bg-gray-600');
+      recordBtn.classList.replace('hover:bg-red-700', 'hover:bg-gray-700');
+      screenSelect.disabled = true;
+      cameraSelect.disabled = true;
+      audioSelect.disabled = true;
+
+      startTime = Date.now();
+      timerInterval = setInterval(updateTimer, 200);
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+      recording = false;
+      recordBtn.textContent = 'Record';
+      recordBtn.classList.replace('bg-gray-600', 'bg-red-600');
+      recordBtn.classList.replace('hover:bg-gray-700', 'hover:bg-red-700');
+      screenSelect.disabled = false;
+      cameraSelect.disabled = false;
+      audioSelect.disabled = false;
+
+      clearInterval(timerInterval);
+      timerEl.textContent = '00:00';
+    }
+
+    function updateTimer() {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const s = String(elapsed % 60).padStart(2, '0');
+      timerEl.textContent = `${m}:${s}`;
+    }
+
+    // Settings
+    settingsBtn.addEventListener('click', () => {
+      settingsPanel.classList.toggle('hidden');
+    });
+
+    openFolderBtn.addEventListener('click', () => {
+      if (saveFolder) window.electronAPI.openFolder(saveFolder);
+    });
+
+    pickFolderBtn.addEventListener('click', async () => {
+      const folder = await window.electronAPI.pickFolder();
+      if (folder) {
+        saveFolder = folder;
+        localStorage.setItem('saveFolder', folder);
+        folderPathEl.textContent = folder;
+        openFolderBtn.classList.remove('hidden');
+        updatePreview();
+      }
+    });
+
+    // Source change handlers
+    screenSelect.addEventListener('change', async () => {
+      try { await updateScreenStream(); } catch (e) { console.error(e); }
+      updatePreview();
+    });
+
+    cameraSelect.addEventListener('change', async () => {
+      try { await updateCameraStream(); } catch (e) { console.error(e); }
+      updatePreview();
+    });
+
+    audioSelect.addEventListener('change', async () => {
+      try { await updateAudioStream(); } catch (e) { console.error(e); }
+    });
+
+    recordBtn.addEventListener('click', toggleRecording);
+
+    // Init
+    if (saveFolder) {
+      folderPathEl.textContent = saveFolder;
+      openFolderBtn.classList.remove('hidden');
+    }
+    enumerateDevices().then(async () => {
+      try { await updateScreenStream(); } catch (e) {}
+      try { await updateCameraStream(); } catch (e) {}
+      try { await updateAudioStream(); } catch (e) {}
+      updatePreview();
+    });
+  </script>
+</body>
+</html>
