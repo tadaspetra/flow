@@ -40,8 +40,8 @@ ipcMain.handle('open-folder', async (event, folder) => {
   shell.openPath(folder)
 })
 
-ipcMain.handle('save-video', async (event, buffer, folder) => {
-  const filename = `recording-${Date.now()}.webm`
+ipcMain.handle('save-video', async (event, buffer, folder, suffix) => {
+  const filename = `recording-${Date.now()}${suffix ? '-' + suffix : ''}.webm`
   const filePath = path.join(folder, filename)
   fs.writeFileSync(filePath, Buffer.from(buffer))
   return filePath

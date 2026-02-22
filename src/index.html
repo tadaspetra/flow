@@ -89,8 +89,7 @@
     let screenStream = null;
     let cameraStream = null;
     let audioStream = null;
-    let mediaRecorder = null;
-    let chunks = [];
+    let recorders = [];
     let recording = false;
     let timerInterval = null;
     let startTime = 0;
@@ -314,31 +313,53 @@
       else stopRecording();
     }
 
-    function startRecording() {
-      chunks = [];
+    function createRecorder(stream, suffix) {
+      const chunks = [];
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
 
-      // Capture the canvas as a video stream
-      const canvasStream = canvas.captureStream(30);
-
-      // Add audio track if available
-      if (audioStream) {
-        audioStream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
-      }
-
-      mediaRecorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm; codecs=vp9' });
-
-      mediaRecorder.ondataavailable = (e) => {
+      recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunks.push(e.data);
       };
 
-      mediaRecorder.onstop = async () => {
+      recorder.onstop = async () => {
         const blob = new Blob(chunks, { type: 'video/webm' });
         const buffer = await blob.arrayBuffer();
-        const saved = await window.electronAPI.saveVideo(buffer, saveFolder);
-        if (saved) console.log('Saved to:', saved);
+        const saved = await window.electronAPI.saveVideo(buffer, saveFolder, suffix);
+        if (saved) console.log('Saved:', saved);
       };
 
-      mediaRecorder.start(100);
+      return recorder;
+    }
+
+    function addAudioToStream(stream) {
+      if (!audioStream) return stream;
+      const combined = new MediaStream([
+        ...stream.getVideoTracks(),
+        ...audioStream.getAudioTracks()
+      ]);
+      return combined;
+    }
+
+    function startRecording() {
+      recorders = [];
+
+      // Combo (canvas composite)
+      const comboStream = addAudioToStream(canvas.captureStream(30));
+      recorders.push(createRecorder(comboStream, 'combo'));
+
+      // Individual screen
+      if (screenStream) {
+        const screenOnly = addAudioToStream(new MediaStream(screenStream.getVideoTracks()));
+        recorders.push(createRecorder(screenOnly, 'screen'));
+      }
+
+      // Individual camera
+      if (cameraStream) {
+        const cameraOnly = addAudioToStream(new MediaStream(cameraStream.getVideoTracks()));
+        recorders.push(createRecorder(cameraOnly, 'camera'));
+      }
+
+      recorders.forEach(r => r.start(100));
       recording = true;
       recordBtn.textContent = 'Stop';
       recordBtn.classList.replace('bg-red-600', 'bg-gray-600');
@@ -352,9 +373,10 @@
     }
 
     function stopRecording() {
-      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-      }
+      recorders.forEach(r => {
+        if (r.state !== 'inactive') r.stop();
+      });
+      recorders = [];
       recording = false;
       recordBtn.textContent = 'Record';
       recordBtn.classList.replace('bg-gray-600', 'bg-red-600');

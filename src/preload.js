@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  saveVideo: (buffer, folder) => ipcRenderer.invoke('save-video', buffer, folder),
+  saveVideo: (buffer, folder, suffix) => ipcRenderer.invoke('save-video', buffer, folder, suffix),
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   openFolder: (folder) => ipcRenderer.invoke('open-folder', folder),
   getSources: () => ipcRenderer.invoke('get-sources')
