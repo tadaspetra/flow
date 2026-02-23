@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "skills": {
+    "agents": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "computedHash": "1342963744617eab8abfaaec3fd201fe14c1cba51ec8331f9d54ac102e3676bf"
+    },
+    "music": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "computedHash": "0a48c6992c823e70f18a20fe2616160fcc8bdf60d35d6e56ffdc13c44a631fde"
+    },
+    "sound-effects": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "computedHash": "54ec05122413cbc956b28fbd81c676e44eb0fdbbf6459ee3b367b2c7a1350b02"
+    },
+    "speech-to-text": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "computedHash": "5f780318ac562e769abbee55bccea922293b4c0c2e018975d607f538022fbe23"
+    },
+    "text-to-speech": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "computedHash": "dccf9155f284345ade4a5af5d3c3db5d5da77856011ff92fff725160b0df8370"
+    }
+  }
+}
