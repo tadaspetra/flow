@@ -1,3 +1,4 @@
+require('dotenv').config()
 require('electron-reload')(__dirname)
 const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, shell } = require('electron')
 const path = require('path')
@@ -174,6 +175,105 @@ function buildAlphaExpr(keyframes) {
   }
   return expr
 }
+
+// ===== Scribe Token Generation =====
+
+ipcMain.handle('get-scribe-token', async () => {
+  try {
+    const { ElevenLabsClient } = require('@elevenlabs/elevenlabs-js')
+    const client = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY })
+    const response = await client.tokens.singleUse.create('realtime_scribe')
+    return response.token
+  } catch (err) {
+    console.error('Failed to get Scribe token:', err)
+    throw err
+  }
+})
+
+// ===== Trim Silence =====
+
+ipcMain.handle('trim-silence', async (event, opts) => {
+  const { screenPath, cameraPath, segments, outputFolder } = opts
+  const ffmpegPath = require('ffmpeg-static')
+  const PADDING = 0.15 // 150ms padding
+
+  // Add padding and merge overlapping segments
+  let padded = segments.map(s => ({
+    start: Math.max(0, s.start - PADDING),
+    end: s.end + PADDING
+  }))
+
+  // Sort by start time
+  padded.sort((a, b) => a.start - b.start)
+
+  // Merge overlapping/adjacent segments
+  const merged = [padded[0]]
+  for (let i = 1; i < padded.length; i++) {
+    const last = merged[merged.length - 1]
+    if (padded[i].start <= last.end) {
+      last.end = Math.max(last.end, padded[i].end)
+    } else {
+      merged.push(padded[i])
+    }
+  }
+
+  function buildTrimFilter(merged) {
+    const parts = []
+    const labels = []
+
+    for (let i = 0; i < merged.length; i++) {
+      const s = merged[i].start.toFixed(3)
+      const e = merged[i].end.toFixed(3)
+      parts.push(`[0:v]trim=start=${s}:end=${e},setpts=PTS-STARTPTS[v${i}]`)
+      parts.push(`[0:a]atrim=start=${s}:end=${e},asetpts=PTS-STARTPTS[a${i}]`)
+      labels.push(`[v${i}][a${i}]`)
+    }
+
+    parts.push(`${labels.join('')}concat=n=${merged.length}:v=1:a=1[outv][outa]`)
+    return parts.join(';')
+  }
+
+  function trimFile(inputPath) {
+    const ext = path.extname(inputPath)
+    const base = path.basename(inputPath, ext)
+    const outputPath = path.join(outputFolder, `${base}-trimmed${ext}`)
+    const filter = buildTrimFilter(merged)
+
+    const args = [
+      '-i', inputPath,
+      '-filter_complex', filter,
+      '-map', '[outv]', '-map', '[outa]',
+      '-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0',
+      '-c:a', 'libopus',
+      '-y', outputPath
+    ]
+
+    return new Promise((resolve, reject) => {
+      execFile(ffmpegPath, args, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) {
+          console.error('FFmpeg trim stderr:', stderr)
+          reject(stderr || error.message)
+        } else {
+          resolve(outputPath)
+        }
+      })
+    })
+  }
+
+  const results = {}
+
+  // Run in parallel for screen and camera
+  const promises = []
+  if (screenPath) {
+    promises.push(trimFile(screenPath).then(p => { results.screenPath = p }))
+  }
+  if (cameraPath) {
+    promises.push(trimFile(cameraPath).then(p => { results.cameraPath = p }))
+  }
+
+  await Promise.all(promises)
+  return results
+})
 
 app.whenReady().then(createWindow)
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline'; media-src 'self' blob:" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline'; media-src 'self' blob: file:; connect-src 'self' wss://api.elevenlabs.io" />
   <script src="https://cdn.tailwindcss.com"></script>
   <title>Video Recorder</title>
 </head>
@@ -34,11 +34,23 @@
       </div>
     </div>
 
-    <!-- Preview -->
-    <div class="flex-1 bg-black overflow-hidden relative flex items-center justify-center min-h-[360px]">
-      <canvas id="compositeCanvas" class="w-full h-full object-contain"></canvas>
-      <div id="noPreview" class="absolute inset-0 flex items-center justify-center text-gray-500">
-        Select a source to start preview
+    <!-- Preview + Transcript -->
+    <div class="flex-1 flex gap-0 min-h-[360px] overflow-hidden">
+      <!-- Transcript panel (shown during recording) -->
+      <div id="transcriptPanel" class="hidden w-64 shrink-0 bg-gray-800 border border-gray-700 rounded-l flex flex-col overflow-hidden">
+        <div class="flex items-center justify-between px-3 py-2 border-b border-gray-700">
+          <span class="text-sm text-gray-400">Transcript</span>
+          <span id="segmentBadge" class="text-xs bg-gray-600 text-gray-300 px-2 py-0.5 rounded-full">0 segments</span>
+        </div>
+        <div id="transcriptContent" class="flex-1 overflow-y-auto px-3 py-2 text-sm leading-relaxed">
+        </div>
+      </div>
+      <!-- Preview -->
+      <div class="flex-1 bg-black overflow-hidden relative flex items-center justify-center">
+        <canvas id="compositeCanvas" class="w-full h-full object-contain"></canvas>
+        <div id="noPreview" class="absolute inset-0 flex items-center justify-center text-gray-500">
+          Select a source to start preview
+        </div>
       </div>
     </div>
 
@@ -73,6 +85,15 @@
         <button id="openFolderBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors hidden">Open</button>
         <button id="pickFolderBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Browse</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Processing View -->
+  <div id="processingView" class="hidden flex-1 flex flex-col items-center justify-center p-6 gap-4">
+    <div class="text-xl font-medium">Trimming silence...</div>
+    <div id="processingStatus" class="text-sm text-gray-400">Processing segments</div>
+    <div class="w-64 bg-gray-800 rounded-full h-3 overflow-hidden">
+      <div id="processingBar" class="bg-blue-500 h-full rounded-full transition-all duration-300 animate-pulse" style="width: 100%"></div>
     </div>
   </div>
 
@@ -136,6 +157,11 @@
     const openFolderBtn = document.getElementById('openFolderBtn');
     const pickFolderBtn = document.getElementById('pickFolderBtn');
     const recordingView = document.getElementById('recordingView');
+    const transcriptPanel = document.getElementById('transcriptPanel');
+    const transcriptContent = document.getElementById('transcriptContent');
+    const segmentBadge = document.getElementById('segmentBadge');
+    const processingView = document.getElementById('processingView');
+    const processingStatus = document.getElementById('processingStatus');
 
     // Editor DOM refs
     const editorView = document.getElementById('editorView');
@@ -169,6 +195,14 @@
     let meterRAF = null;
     let drawRAF = null;
     let saveFolder = localStorage.getItem('saveFolder') || '';
+    let scribeWs = null;
+    let scribeWorkletNode = null;
+    let speechSegments = [];
+    let audioChunkBuffer = [];
+    let audioSendInterval = null;
+    let micSourceNode = null;
+    let scribeAudioOffset = 0; // seconds between recording start and first audio sent to Scribe
+    let workletRegistered = null; // tracks which AudioContext has the worklet registered
 
     const CANVAS_W = 1920;
     const CANVAS_H = 1080;
@@ -404,8 +438,8 @@
       audioContext = new AudioContext();
       analyser = audioContext.createAnalyser();
       analyser.fftSize = 256;
-      const source = audioContext.createMediaStreamSource(stream);
-      source.connect(analyser);
+      micSourceNode = audioContext.createMediaStreamSource(stream);
+      micSourceNode.connect(analyser);
 
       const data = new Uint8Array(analyser.frequencyBinCount);
 
@@ -423,7 +457,12 @@
     function stopAudioMeter() {
       if (meterRAF) cancelAnimationFrame(meterRAF);
       meterRAF = null;
-      if (audioContext) { audioContext.close(); audioContext = null; }
+      micSourceNode = null;
+      if (audioContext) {
+        if (workletRegistered === audioContext) workletRegistered = null;
+        audioContext.close();
+        audioContext = null;
+      }
       audioMeter.style.width = '0%';
     }
 
@@ -465,8 +504,22 @@
       return combined;
     }
 
-    function startRecording() {
+    function mergeInt16Arrays(arrays) {
+      let totalLength = 0;
+      for (const arr of arrays) totalLength += arr.length;
+      const merged = new Int16Array(totalLength);
+      let offset = 0;
+      for (const arr of arrays) {
+        merged.set(arr, offset);
+        offset += arr.length;
+      }
+      return merged;
+    }
+
+    async function startRecording() {
       recorders = [];
+      speechSegments = [];
+      audioChunkBuffer = [];
 
       // Individual screen (with audio)
       if (screenStream) {
@@ -491,11 +544,151 @@
 
       startTime = Date.now();
       timerInterval = setInterval(updateTimer, 200);
+
+      // Show transcript panel and clear previous content
+      transcriptPanel.classList.remove('hidden');
+      transcriptContent.innerHTML = '';
+      segmentBadge.textContent = '0 segments';
+
+      // Set up Scribe via direct WebSocket
+      if (audioContext && audioStream && micSourceNode) {
+        try {
+          const token = await window.electronAPI.getScribeToken();
+          const sampleRate = audioContext.sampleRate;
+
+          // Map sample rate to ElevenLabs audio_format parameter
+          const formatMap = { 8000: 'pcm_8000', 16000: 'pcm_16000', 22050: 'pcm_22050', 24000: 'pcm_24000', 44100: 'pcm_44100', 48000: 'pcm_48000' };
+          const audioFormat = formatMap[sampleRate] || 'pcm_16000';
+
+          const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime`
+            + `?model_id=scribe_v2_realtime`
+            + `&token=${token}`
+            + `&audio_format=${audioFormat}`
+            + `&commit_strategy=vad`
+            + `&include_timestamps=true`
+            + `&vad_silence_threshold_secs=1.0`
+            + `&vad_threshold=0.4`
+            + `&min_speech_duration_ms=200`;
+
+          scribeWs = new WebSocket(wsUrl);
+
+          scribeWs.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.message_type === 'partial_transcript') {
+              updatePartialTranscript(msg.text || '');
+            } else if (msg.message_type === 'committed_transcript_with_timestamps') {
+              commitTranscript(msg);
+            }
+          };
+
+          scribeWs.onerror = (err) => {
+            console.error('Scribe WebSocket error:', err);
+          };
+
+          // Set up AudioWorklet for PCM capture (only register module once per AudioContext)
+          if (workletRegistered !== audioContext) {
+            await audioContext.audioWorklet.addModule('audio-processor.js');
+            workletRegistered = audioContext;
+          }
+          scribeWorkletNode = new AudioWorkletNode(audioContext, 'audio-capture');
+          micSourceNode.connect(scribeWorkletNode);
+
+          scribeWorkletNode.port.onmessage = (e) => {
+            if (e.data.pcm) {
+              audioChunkBuffer.push(new Int16Array(e.data.pcm));
+            }
+          };
+
+          // Record the offset: time between recording start and first audio send
+          scribeAudioOffset = (Date.now() - startTime) / 1000;
+
+          // Send accumulated audio every ~100ms
+          audioSendInterval = setInterval(() => {
+            if (audioChunkBuffer.length === 0 || !scribeWs || scribeWs.readyState !== WebSocket.OPEN) return;
+            const merged = mergeInt16Arrays(audioChunkBuffer);
+            audioChunkBuffer = [];
+            const bytes = new Uint8Array(merged.buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+              binary += String.fromCharCode(bytes[i]);
+            }
+            const base64 = btoa(binary);
+            scribeWs.send(JSON.stringify({
+              message_type: 'input_audio_chunk',
+              audio_base_64: base64,
+              sample_rate: sampleRate,
+              commit: false
+            }));
+          }, 100);
+
+        } catch (err) {
+          console.warn('Scribe setup failed:', err);
+        }
+      }
+    }
+
+    function updatePartialTranscript(text) {
+      let partial = document.getElementById('partialText');
+      if (!partial) {
+        partial = document.createElement('div');
+        partial.id = 'partialText';
+        partial.className = 'text-gray-500 italic';
+        transcriptContent.appendChild(partial);
+      }
+      partial.textContent = text;
+      transcriptContent.scrollTop = transcriptContent.scrollHeight;
+    }
+
+    function commitTranscript(data) {
+      // Remove partial display
+      const partial = document.getElementById('partialText');
+      if (partial) partial.remove();
+
+      const words = (data.words || []).filter(w => w.type === 'word');
+      if (words.length > 0) {
+        // Shift timestamps by the offset between recording start and first audio sent
+        speechSegments.push({
+          start: words[0].start + scribeAudioOffset,
+          end: words[words.length - 1].end + scribeAudioOffset,
+          text: data.text
+        });
+      }
+
+      // Add committed text
+      const div = document.createElement('div');
+      div.className = 'mb-2 text-gray-200';
+      div.textContent = data.text || '';
+      transcriptContent.appendChild(div);
+      transcriptContent.scrollTop = transcriptContent.scrollHeight;
+
+      segmentBadge.textContent = `${speechSegments.length} segment${speechSegments.length !== 1 ? 's' : ''}`;
     }
 
     async function stopRecording() {
       const recordedDuration = (Date.now() - startTime) / 1000;
       clearInterval(timerInterval);
+
+      // Stop audio send interval
+      if (audioSendInterval) {
+        clearInterval(audioSendInterval);
+        audioSendInterval = null;
+      }
+
+      // Disconnect worklet
+      if (scribeWorkletNode) {
+        scribeWorkletNode.disconnect();
+        scribeWorkletNode = null;
+      }
+
+      // Send final commit and close WebSocket
+      const hadScribe = !!scribeWs;
+      if (scribeWs && scribeWs.readyState === WebSocket.OPEN) {
+        scribeWs.send(JSON.stringify({ message_type: 'commit' }));
+        await new Promise(r => setTimeout(r, 1000));
+        scribeWs.close();
+      }
+      scribeWs = null;
+      audioChunkBuffer = [];
 
       recorders.forEach(r => {
         if (r.state !== 'inactive') r.stop();
@@ -517,11 +710,43 @@
       audioSelect.disabled = false;
       timerEl.textContent = '00:00';
 
+      // Hide transcript panel
+      transcriptPanel.classList.add('hidden');
+
       // Enter editor if we have at least a screen recording
       if (results.screen) {
+        let screenPath = results.screen.path;
+        let cameraPath = results.camera?.path || null;
+
+        // Trim silence if we have speech segments
+        if (speechSegments.length > 0) {
+          // Show processing view
+          recordingView.classList.add('hidden');
+          processingView.classList.remove('hidden');
+          processingStatus.textContent = `Processing ${speechSegments.length} segment${speechSegments.length !== 1 ? 's' : ''}`;
+
+          try {
+            const trimmed = await window.electronAPI.trimSilence({
+              screenPath,
+              cameraPath,
+              segments: speechSegments,
+              outputFolder: saveFolder
+            });
+            screenPath = trimmed.screenPath || screenPath;
+            cameraPath = trimmed.cameraPath || cameraPath;
+          } catch (err) {
+            console.error('Trim failed, using original files:', err);
+          }
+
+          processingView.classList.add('hidden');
+          recordingView.classList.remove('hidden');
+        } else if (hadScribe) {
+          console.warn('No speech detected, using full recording');
+        }
+
         enterEditor(
           results.screen.blob, results.camera?.blob || null,
-          results.screen.path, results.camera?.path || null,
+          screenPath, cameraPath,
           recordedDuration
         );
       }
@@ -540,8 +765,13 @@
       // Stop live preview
       if (drawRAF) { cancelAnimationFrame(drawRAF); drawRAF = null; }
 
-      const screenBlobUrl = URL.createObjectURL(screenBlob);
-      const cameraBlobUrl = cameraBlob ? URL.createObjectURL(cameraBlob) : null;
+      // Use file:// URLs for trimmed files, blob URLs for originals
+      const screenBlobUrl = screenPath && screenPath.includes('-trimmed')
+        ? 'file://' + screenPath
+        : URL.createObjectURL(screenBlob);
+      const cameraBlobUrl = cameraPath && cameraPath.includes('-trimmed')
+        ? 'file://' + cameraPath
+        : (cameraBlob ? URL.createObjectURL(cameraBlob) : null);
 
       const defaultPipX = CANVAS_W - PIP_SIZE - PIP_MARGIN;
       const defaultPipY = CANVAS_H - PIP_SIZE - PIP_MARGIN;
@@ -594,10 +824,10 @@
       editorPause();
       if (editorDrawRAF) { cancelAnimationFrame(editorDrawRAF); editorDrawRAF = null; }
 
-      // Revoke blob URLs
+      // Revoke blob URLs (not file:// URLs)
       if (editorState) {
-        URL.revokeObjectURL(editorState.screenBlobUrl);
-        if (editorState.cameraBlobUrl) URL.revokeObjectURL(editorState.cameraBlobUrl);
+        if (editorState.screenBlobUrl && editorState.screenBlobUrl.startsWith('blob:')) URL.revokeObjectURL(editorState.screenBlobUrl);
+        if (editorState.cameraBlobUrl && editorState.cameraBlobUrl.startsWith('blob:')) URL.revokeObjectURL(editorState.cameraBlobUrl);
       }
       editorScreenVideo.src = '';
       editorCameraVideo.src = '';

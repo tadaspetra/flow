@@ -5,5 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   openFolder: (folder) => ipcRenderer.invoke('open-folder', folder),
   getSources: () => ipcRenderer.invoke('get-sources'),
-  renderComposite: (opts) => ipcRenderer.invoke('render-composite', opts)
+  renderComposite: (opts) => ipcRenderer.invoke('render-composite', opts),
+  getScribeToken: () => ipcRenderer.invoke('get-scribe-token'),
+  trimSilence: (opts) => ipcRenderer.invoke('trim-silence', opts)
 })
