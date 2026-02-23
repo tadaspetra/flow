@@ -64,7 +64,7 @@ ipcMain.handle('render-composite', async (event, opts) => {
 
   if (cameraPath && keyframes && keyframes.some(kf => kf.pipVisible)) {
     args.push('-i', cameraPath)
-    const filterComplex = buildFilterComplex(keyframes, pipSize, sourceWidth, sourceHeight, canvasW, canvasH)
+    const filterComplex = buildFilterComplex(keyframes, pipSize, screenFitMode, sourceWidth, sourceHeight, canvasW, canvasH)
     args.push('-filter_complex', filterComplex, '-map', '[out]', '-map', '0:a?')
   } else {
     args.push('-map', '0:v', '-map', '0:a?')
@@ -90,21 +90,33 @@ ipcMain.handle('render-composite', async (event, opts) => {
   })
 })
 
-function buildFilterComplex(keyframes, pipSize, sourceWidth, sourceHeight, canvasW, canvasH) {
-  // Scale everything from canvas coords (1920x1080) to source video resolution
-  const scaleX = sourceWidth / canvasW
-  const scaleY = sourceHeight / canvasH
-  const actualPipSize = Math.round(pipSize * scaleX)
-  const r = Math.round(12 * scaleX)
+function buildFilterComplex(keyframes, pipSize, screenFitMode, sourceWidth, sourceHeight, canvasW, canvasH) {
+  // Output at 16:9 based on source width, matching the canvas aspect ratio
+  let outW = sourceWidth % 2 === 0 ? sourceWidth : sourceWidth - 1
+  let outH = Math.round(outW * 9 / 16)
+  if (outH % 2 !== 0) outH--
+
+  // Scale from canvas coords (1920x1080) to output resolution (both 16:9, so uniform scale)
+  const scale = outW / canvasW
+  const actualPipSize = Math.round(pipSize * scale)
+  const r = Math.round(12 * scale)
   const maxCoord = actualPipSize - 1 - r
   const rSq = r * r
 
-  // Scale keyframe positions to source resolution
+  // Scale keyframe positions
   const scaledKeyframes = keyframes.map(kf => ({
     ...kf,
-    pipX: Math.round(kf.pipX * scaleX),
-    pipY: Math.round(kf.pipY * scaleY)
+    pipX: Math.round(kf.pipX * scale),
+    pipY: Math.round(kf.pipY * scale)
   }))
+
+  // Screen: fit or fill into 16:9 output frame
+  let screenFilter
+  if (screenFitMode === 'fill') {
+    screenFilter = `[0:v]scale=${outW}:${outH}:force_original_aspect_ratio=increase,crop=${outW}:${outH}[screen]`
+  } else {
+    screenFilter = `[0:v]scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:'(ow-iw)/2':'(oh-ih)/2':color=black[screen]`
+  }
 
   // Camera: crop center square, scale to pip size, apply rounded corner alpha mask
   const camFilter = `[1:v]crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2',scale=${actualPipSize}:${actualPipSize},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*lte(pow(max(0,max(${r}-X,X-${maxCoord})),2)+pow(max(0,max(${r}-Y,Y-${maxCoord})),2),${rSq})'[cam]`
@@ -113,8 +125,7 @@ function buildFilterComplex(keyframes, pipSize, sourceWidth, sourceHeight, canva
   const yExpr = buildPosExpr(scaledKeyframes, 'pipY')
   const enableExpr = buildVisExpr(keyframes)
 
-  // Overlay camera directly on source video — no screen scaling
-  return `${camFilter};[0:v][cam]overlay=x='${xExpr}':y='${yExpr}':enable='${enableExpr}':format=auto[out]`
+  return `${screenFilter};${camFilter};[screen][cam]overlay=x='${xExpr}':y='${yExpr}':enable='${enableExpr}':format=auto[out]`
 }
 
 function buildPosExpr(keyframes, prop) {
