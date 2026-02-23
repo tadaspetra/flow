@@ -235,7 +235,22 @@
         screenSelect.appendChild(opt);
       });
 
-      devices.filter(d => d.kind === 'videoinput').forEach((d, i) => {
+      const videoInputs = devices.filter(d => d.kind === 'videoinput');
+
+      if (videoInputs.length > 0) {
+        const sep = document.createElement('option');
+        sep.disabled = true;
+        sep.textContent = '── Capture Devices ──';
+        screenSelect.appendChild(sep);
+        videoInputs.forEach((d, i) => {
+          const opt = document.createElement('option');
+          opt.value = 'device:' + d.deviceId;
+          opt.textContent = d.label || `Camera ${i + 1}`;
+          screenSelect.appendChild(opt);
+        });
+      }
+
+      videoInputs.forEach((d, i) => {
         const opt = document.createElement('option');
         opt.value = d.deviceId;
         opt.textContent = d.label || `Camera ${i + 1}`;
@@ -267,15 +282,23 @@
       const sourceId = screenSelect.value;
       if (!sourceId) return;
 
-      screenStream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          mandatory: {
-            chromeMediaSource: 'desktop',
-            chromeMediaSourceId: sourceId
+      if (sourceId.startsWith('device:')) {
+        const deviceId = sourceId.slice('device:'.length);
+        screenStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+        });
+      } else {
+        screenStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: sourceId
+            }
           }
-        }
-      });
+        });
+      }
       screenVideo.srcObject = screenStream;
     }
 
