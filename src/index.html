@@ -657,11 +657,12 @@
       // Add committed text
       const div = document.createElement('div');
       div.className = 'mb-2 text-gray-200';
+      div.dataset.segmentIndex = speechSegments.length - 1;
       div.textContent = data.text || '';
       transcriptContent.appendChild(div);
       transcriptContent.scrollTop = transcriptContent.scrollHeight;
 
-      segmentBadge.textContent = `${speechSegments.length} segment${speechSegments.length !== 1 ? 's' : ''}`;
+      updateSegmentBadge();
     }
 
     async function stopRecording() {
@@ -719,17 +720,18 @@
         let cameraPath = results.camera?.path || null;
 
         // Trim silence if we have speech segments
-        if (speechSegments.length > 0) {
+        const activeSegments = speechSegments.filter(s => !s.deleted);
+        if (activeSegments.length > 0) {
           // Show processing view
           recordingView.classList.add('hidden');
           processingView.classList.remove('hidden');
-          processingStatus.textContent = `Processing ${speechSegments.length} segment${speechSegments.length !== 1 ? 's' : ''}`;
+          processingStatus.textContent = `Processing ${activeSegments.length} segment${activeSegments.length !== 1 ? 's' : ''}`;
 
           try {
             const trimmed = await window.electronAPI.trimSilence({
               screenPath,
               cameraPath,
-              segments: speechSegments,
+              segments: activeSegments,
               outputFolder: saveFolder
             });
             screenPath = trimmed.screenPath || screenPath;
@@ -1216,7 +1218,36 @@
 
     // ===== Keyboard shortcuts =====
 
+    function updateSegmentBadge() {
+      const total = speechSegments.length;
+      const removed = speechSegments.filter(s => s.deleted).length;
+      const active = total - removed;
+      if (removed > 0) {
+        segmentBadge.textContent = `${active} segment${active !== 1 ? 's' : ''} (${removed} removed)`;
+      } else {
+        segmentBadge.textContent = `${total} segment${total !== 1 ? 's' : ''}`;
+      }
+    }
+
     document.addEventListener('keydown', (e) => {
+      // Backspace during recording: remove last non-deleted segment
+      if (recording && e.code === 'Backspace') {
+        e.preventDefault();
+        for (let i = speechSegments.length - 1; i >= 0; i--) {
+          if (!speechSegments[i].deleted) {
+            speechSegments[i].deleted = true;
+            const el = transcriptContent.querySelector(`[data-segment-index="${i}"]`);
+            if (el) {
+              el.style.textDecoration = 'line-through';
+              el.style.opacity = '0.4';
+            }
+            updateSegmentBadge();
+            break;
+          }
+        }
+        return;
+      }
+
       if (!editorState || editorState.rendering) return;
       // Don't capture if focus is in an input
       if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
