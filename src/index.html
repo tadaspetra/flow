@@ -120,6 +120,7 @@
       <button id="editorPlayBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Play</button>
       <button id="editorKeyframeBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Add Keyframe</button>
       <button id="editorToggleCamBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Toggle Camera</button>
+      <button id="editorCamFullBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Camera Full</button>
       <button id="editorDeleteKfBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Delete Keyframe</button>
     </div>
 
@@ -173,6 +174,7 @@
     const editorPlayBtn = document.getElementById('editorPlayBtn');
     const editorKeyframeBtn = document.getElementById('editorKeyframeBtn');
     const editorToggleCamBtn = document.getElementById('editorToggleCamBtn');
+    const editorCamFullBtn = document.getElementById('editorCamFullBtn');
     const editorDeleteKfBtn = document.getElementById('editorDeleteKfBtn');
     const editorRenderBtn = document.getElementById('editorRenderBtn');
     const editorTimeEl = document.getElementById('editorTime');
@@ -845,7 +847,7 @@
     }
 
     function getStateAtTime(time) {
-      const defaultKf = { time: 0, pipX: editorState.defaultPipX, pipY: editorState.defaultPipY, pipVisible: true };
+      const defaultKf = { time: 0, pipX: editorState.defaultPipX, pipY: editorState.defaultPipY, pipVisible: true, cameraFullscreen: false };
       const userKfs = editorState.keyframes;
       const kfs = userKfs.length > 0 && userKfs[0].time === 0 ? userKfs : [defaultKf, ...userKfs];
 
@@ -888,7 +890,23 @@
         }
       }
 
-      return { pipX, pipY, pipVisible: opacity > 0, opacity };
+      // Camera fullscreen state + fade
+      let cameraFullscreen = active.cameraFullscreen || false;
+      let camFullOpacity = cameraFullscreen ? 1 : 0;
+
+      if (prev && (prev.cameraFullscreen || false) !== cameraFullscreen) {
+        const elapsed = time - active.time;
+        if (elapsed < TRANSITION_DURATION) {
+          const t = elapsed / TRANSITION_DURATION;
+          if (cameraFullscreen) {
+            camFullOpacity = t;
+          } else {
+            camFullOpacity = 1 - t;
+          }
+        }
+      }
+
+      return { pipX, pipY, pipVisible: opacity > 0, opacity, cameraFullscreen, camFullOpacity };
     }
 
     function formatTime(seconds) {
@@ -977,7 +995,12 @@
 
       if (hasCamera) {
         const kf = getStateAtTime(editorState.currentTime);
-        if (kf.opacity > 0) {
+        if (kf.camFullOpacity > 0) {
+          editorCtx.save();
+          editorCtx.globalAlpha = kf.camFullOpacity;
+          drawFill(editorCtx, editorCameraVideo, 0, 0, CANVAS_W, CANVAS_H);
+          editorCtx.restore();
+        } else if (kf.opacity > 0) {
           editorCtx.save();
           editorCtx.globalAlpha = kf.opacity;
           drawPip(editorCtx, editorCameraVideo, kf.pipX, kf.pipY, editorState.pipSize, editorState.pipSize);
@@ -1002,7 +1025,8 @@
         time,
         pipX: current.pipX,
         pipY: current.pipY,
-        pipVisible: current.pipVisible
+        pipVisible: current.pipVisible,
+        cameraFullscreen: current.cameraFullscreen || false
       });
 
       editorState.keyframes.sort((a, b) => a.time - b.time);
@@ -1023,7 +1047,30 @@
           time,
           pipX: current.pipX,
           pipY: current.pipY,
-          pipVisible: !current.pipVisible
+          pipVisible: !current.pipVisible,
+          cameraFullscreen: current.cameraFullscreen || false
+        });
+        editorState.keyframes.sort((a, b) => a.time - b.time);
+      }
+
+      renderKeyframeMarkers();
+    }
+
+    function toggleCameraFullscreen() {
+      if (!editorState || editorState.rendering) return;
+      const time = editorState.currentTime;
+      const current = getStateAtTime(time);
+
+      let existing = editorState.keyframes.find(kf => Math.abs(kf.time - time) < 0.001);
+      if (existing) {
+        existing.cameraFullscreen = !(existing.cameraFullscreen || false);
+      } else {
+        editorState.keyframes.push({
+          time,
+          pipX: current.pipX,
+          pipY: current.pipY,
+          pipVisible: current.pipVisible,
+          cameraFullscreen: !(current.cameraFullscreen || false)
         });
         editorState.keyframes.sort((a, b) => a.time - b.time);
       }
@@ -1059,7 +1106,7 @@
         dot.style.top = '50%';
         dot.style.transform = 'translate(-50%, -50%)';
         dot.style.left = pct + '%';
-        dot.style.backgroundColor = kf.pipVisible ? '#3b82f6' : '#ef4444';
+        dot.style.backgroundColor = kf.cameraFullscreen ? '#f59e0b' : (kf.pipVisible ? '#3b82f6' : '#ef4444');
         editorKeyframeMarkers.appendChild(dot);
       }
     }
@@ -1118,7 +1165,8 @@
           time,
           pipX: newX,
           pipY: newY,
-          pipVisible: current.pipVisible
+          pipVisible: current.pipVisible,
+          cameraFullscreen: current.cameraFullscreen || false
         });
         editorState.keyframes.sort((a, b) => a.time - b.time);
         renderKeyframeMarkers();
@@ -1155,6 +1203,7 @@
     editorPlayBtn.addEventListener('click', editorTogglePlay);
     editorKeyframeBtn.addEventListener('click', addKeyframe);
     editorToggleCamBtn.addEventListener('click', toggleCameraVisibility);
+    editorCamFullBtn.addEventListener('click', toggleCameraFullscreen);
     editorDeleteKfBtn.addEventListener('click', deleteNearestKeyframe);
 
     // ===== Render pipeline =====
@@ -1175,6 +1224,7 @@
       editorPlayBtn.disabled = true;
       editorKeyframeBtn.disabled = true;
       editorToggleCamBtn.disabled = true;
+      editorCamFullBtn.disabled = true;
       editorDeleteKfBtn.disabled = true;
       editorRenderBtn.disabled = true;
       editorBackBtn.disabled = true;
@@ -1184,7 +1234,7 @@
 
         const renderKeyframes = editorState.keyframes.length > 0 && editorState.keyframes[0].time === 0
           ? editorState.keyframes
-          : [{ time: 0, pipX: editorState.defaultPipX, pipY: editorState.defaultPipY, pipVisible: true }, ...editorState.keyframes];
+          : [{ time: 0, pipX: editorState.defaultPipX, pipY: editorState.defaultPipY, pipVisible: true, cameraFullscreen: false }, ...editorState.keyframes];
 
         const mp4Path = await window.electronAPI.renderComposite({
           screenPath: editorState.screenPath,
@@ -1210,6 +1260,7 @@
       editorPlayBtn.disabled = false;
       editorKeyframeBtn.disabled = false;
       editorToggleCamBtn.disabled = false;
+      editorCamFullBtn.disabled = false;
       editorDeleteKfBtn.disabled = false;
       editorRenderBtn.disabled = false;
       editorBackBtn.disabled = false;
@@ -1266,6 +1317,9 @@
       } else if (e.code === 'KeyK') {
         e.preventDefault();
         addKeyframe();
+      } else if (e.code === 'KeyF') {
+        e.preventDefault();
+        toggleCameraFullscreen();
       }
     });
 

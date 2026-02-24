@@ -63,7 +63,7 @@ ipcMain.handle('render-composite', async (event, opts) => {
 
   let args = ['-i', screenPath]
 
-  if (cameraPath && keyframes && keyframes.some(kf => kf.pipVisible)) {
+  if (cameraPath && keyframes && keyframes.some(kf => kf.pipVisible || kf.cameraFullscreen)) {
     args.push('-i', cameraPath)
     const filterComplex = buildFilterComplex(keyframes, pipSize, screenFitMode, sourceWidth, sourceHeight, canvasW, canvasH)
     args.push('-filter_complex', filterComplex, '-map', '[out]', '-map', '0:a?')
@@ -119,15 +119,39 @@ function buildFilterComplex(keyframes, pipSize, screenFitMode, sourceWidth, sour
     screenFilter = `[0:v]scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:'(ow-iw)/2':'(oh-ih)/2':color=black[screen]`
   }
 
-  // Camera: crop center square, scale to pip size, apply rounded corner alpha mask with fade
-  const alphaExpr = buildAlphaExpr(keyframes)
-  const roundCorner = `lte(pow(max(0,max(${r}-X,X-${maxCoord})),2)+pow(max(0,max(${r}-Y,Y-${maxCoord})),2),${rSq})`
-  const camFilter = `[1:v]setpts=PTS-STARTPTS,crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2',scale=${actualPipSize}:${actualPipSize},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*${roundCorner}*(${alphaExpr})'[cam]`
+  const hasPip = keyframes.some(kf => kf.pipVisible)
+  const hasCamFull = keyframes.some(kf => kf.cameraFullscreen)
 
-  const xExpr = buildPosExpr(scaledKeyframes, 'pipX')
-  const yExpr = buildPosExpr(scaledKeyframes, 'pipY')
+  if (hasPip && hasCamFull) {
+    // Both PiP and fullscreen: split camera input
+    const alphaExpr = buildAlphaExpr(keyframes)
+    const roundCorner = `lte(pow(max(0,max(${r}-X,X-${maxCoord})),2)+pow(max(0,max(${r}-Y,Y-${maxCoord})),2),${rSq})`
+    const camPipFilter = `[cam1]setpts=PTS-STARTPTS,crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2',scale=${actualPipSize}:${actualPipSize},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*${roundCorner}*(${alphaExpr})'[cam]`
 
-  return `${screenFilter};${camFilter};[screen][cam]overlay=x='${xExpr}':y='${yExpr}':format=auto[out]`
+    const camFullAlpha = buildCamFullAlphaExpr(keyframes)
+    const camFullFilter = `[cam2]setpts=PTS-STARTPTS,scale=${outW}:${outH}:force_original_aspect_ratio=increase,crop=${outW}:${outH},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*(${camFullAlpha})'[camfull]`
+
+    const xExpr = buildPosExpr(scaledKeyframes, 'pipX')
+    const yExpr = buildPosExpr(scaledKeyframes, 'pipY')
+
+    return `${screenFilter};[1:v]split[cam1][cam2];${camPipFilter};${camFullFilter};[screen][cam]overlay=x='${xExpr}':y='${yExpr}':format=auto[with_pip];[with_pip][camfull]overlay=0:0:format=auto[out]`
+  } else if (hasCamFull) {
+    // Only fullscreen camera
+    const camFullAlpha = buildCamFullAlphaExpr(keyframes)
+    const camFullFilter = `[1:v]setpts=PTS-STARTPTS,scale=${outW}:${outH}:force_original_aspect_ratio=increase,crop=${outW}:${outH},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*(${camFullAlpha})'[camfull]`
+
+    return `${screenFilter};${camFullFilter};[screen][camfull]overlay=0:0:format=auto[out]`
+  } else {
+    // Only PiP (existing behavior)
+    const alphaExpr = buildAlphaExpr(keyframes)
+    const roundCorner = `lte(pow(max(0,max(${r}-X,X-${maxCoord})),2)+pow(max(0,max(${r}-Y,Y-${maxCoord})),2),${rSq})`
+    const camFilter = `[1:v]setpts=PTS-STARTPTS,crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2',scale=${actualPipSize}:${actualPipSize},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*${roundCorner}*(${alphaExpr})'[cam]`
+
+    const xExpr = buildPosExpr(scaledKeyframes, 'pipX')
+    const yExpr = buildPosExpr(scaledKeyframes, 'pipY')
+
+    return `${screenFilter};${camFilter};[screen][cam]overlay=x='${xExpr}':y='${yExpr}':format=auto[out]`
+  }
 }
 
 const TRANSITION_DURATION = 0.3
@@ -171,6 +195,32 @@ function buildAlphaExpr(keyframes) {
       }
     } else {
       expr = `if(gte(T,${t.toFixed(3)}),${curr.pipVisible ? '1' : '0'},${expr})`
+    }
+  }
+  return expr
+}
+
+function buildCamFullAlphaExpr(keyframes) {
+  if (keyframes.length === 1) return keyframes[0].cameraFullscreen ? '1' : '0'
+  let expr = keyframes[0].cameraFullscreen ? '1' : '0'
+  for (let i = 1; i < keyframes.length; i++) {
+    const prev = keyframes[i - 1]
+    const curr = keyframes[i]
+    const t = curr.time
+    const tEnd = t + TRANSITION_DURATION
+    const prevFull = prev.cameraFullscreen || false
+    const currFull = curr.cameraFullscreen || false
+
+    if (prevFull !== currFull) {
+      if (currFull) {
+        // Fade in: 0 -> 1
+        expr = `if(gte(T,${tEnd.toFixed(3)}),1,if(gte(T,${t.toFixed(3)}),(T-${t.toFixed(3)})/${TRANSITION_DURATION.toFixed(3)},${expr}))`
+      } else {
+        // Fade out: 1 -> 0
+        expr = `if(gte(T,${tEnd.toFixed(3)}),0,if(gte(T,${t.toFixed(3)}),(${tEnd.toFixed(3)}-T)/${TRANSITION_DURATION.toFixed(3)},${expr}))`
+      }
+    } else {
+      expr = `if(gte(T,${t.toFixed(3)}),${currFull ? '1' : '0'},${expr})`
     }
   }
   return expr
