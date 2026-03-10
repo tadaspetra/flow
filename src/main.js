@@ -267,6 +267,34 @@ ipcMain.handle('trim-silence', async (event, opts) => {
     }
   }
 
+  function buildRemappedSections(segmentsToMap) {
+    const remapped = []
+    let timelineCursor = 0
+
+    for (let i = 0; i < segmentsToMap.length; i++) {
+      const seg = segmentsToMap[i]
+      const sourceStart = Number(seg.start.toFixed(3))
+      const sourceEnd = Number(seg.end.toFixed(3))
+      const sectionDuration = Math.max(0, sourceEnd - sourceStart)
+      const start = Number(timelineCursor.toFixed(3))
+      const end = Number((timelineCursor + sectionDuration).toFixed(3))
+
+      remapped.push({
+        id: `section-${i + 1}`,
+        index: i,
+        sourceStart,
+        sourceEnd,
+        start,
+        end,
+        duration: Number(sectionDuration.toFixed(3))
+      })
+
+      timelineCursor += sectionDuration
+    }
+
+    return remapped
+  }
+
   function buildTrimFilter(merged) {
     const parts = []
     const labels = []
@@ -311,6 +339,11 @@ ipcMain.handle('trim-silence', async (event, opts) => {
   }
 
   const results = {}
+  const remappedSections = buildRemappedSections(merged)
+  results.sections = remappedSections
+  results.trimmedDuration = remappedSections.length > 0
+    ? remappedSections[remappedSections.length - 1].end
+    : 0
 
   // Run in parallel for screen and camera
   const promises = []
