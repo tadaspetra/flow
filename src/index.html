@@ -78,13 +78,20 @@
     </div>
 
     <!-- Settings panel -->
-    <div id="settingsPanel" class="hidden bg-gray-800 border border-gray-700 rounded p-4">
+    <div id="settingsPanel" class="hidden bg-gray-800 border border-gray-700 rounded p-4 space-y-4">
       <div class="flex items-center gap-3">
         <label class="text-sm text-gray-400 shrink-0">Save to</label>
         <span id="folderPath" class="text-sm truncate flex-1 text-gray-300">Not set</span>
         <button id="openFolderBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors hidden">Open</button>
         <button id="pickFolderBtn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Browse</button>
       </div>
+      <label class="flex items-start gap-3 text-sm text-gray-300 cursor-pointer select-none">
+        <input id="contentProtectionToggle" type="checkbox" class="mt-0.5 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500" checked>
+        <span>
+          Invisible from recording
+          <span class="block text-xs text-gray-500">Turn this off when you want to capture screenshots of the app window.</span>
+        </span>
+      </label>
     </div>
   </div>
 
@@ -158,6 +165,7 @@
     const folderPathEl = document.getElementById('folderPath');
     const openFolderBtn = document.getElementById('openFolderBtn');
     const pickFolderBtn = document.getElementById('pickFolderBtn');
+    const contentProtectionToggle = document.getElementById('contentProtectionToggle');
     const recordingView = document.getElementById('recordingView');
     const transcriptPanel = document.getElementById('transcriptPanel');
     const transcriptContent = document.getElementById('transcriptContent');
@@ -199,6 +207,7 @@
     let meterRAF = null;
     let drawRAF = null;
     let saveFolder = localStorage.getItem('saveFolder') || '';
+    let hideFromRecording = localStorage.getItem('hideFromRecording');
     let scribeWs = null;
     let scribeWorkletNode = null;
     let speechSegments = [];
@@ -215,6 +224,11 @@
     const PIP_SIZE = Math.round(CANVAS_W * PIP_FRACTION);
     const TRANSITION_DURATION = 0.3;
     const TRIM_PADDING = 0.15;
+
+    if (hideFromRecording === null) {
+      hideFromRecording = 'true';
+      localStorage.setItem('hideFromRecording', hideFromRecording);
+    }
 
     canvas.width = CANVAS_W;
     canvas.height = CANVAS_H;
@@ -234,6 +248,17 @@
 
     function roundMs(value) {
       return Number(value.toFixed(3));
+    }
+
+    async function syncContentProtection() {
+      const enabled = hideFromRecording === 'true';
+      contentProtectionToggle.checked = enabled;
+
+      try {
+        await window.electronAPI.setContentProtection(enabled);
+      } catch (error) {
+        console.error('Failed to update content protection:', error);
+      }
     }
 
     function buildRemappedSectionsFromSegments(segments) {
@@ -923,6 +948,48 @@
       }
     }
 
+    function stripNonSpeechAnnotations(text) {
+      return String(text || '')
+        .replace(/\[[^\]]*\]/g, ' ')
+        .replace(/\([^)]*\)/g, ' ')
+        .replace(/\[[^\]]*$/g, ' ')
+        .replace(/\([^)]*$/g, ' ')
+        .replace(/\s+([,.;!?])/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function extractSpokenWordTokens(tokens) {
+      const spoken = [];
+      let parenDepth = 0;
+      let bracketDepth = 0;
+
+      for (const token of Array.isArray(tokens) ? tokens : []) {
+        const rawText = typeof token?.text === 'string' ? token.text : '';
+        const text = rawText.trim();
+        if (!text) continue;
+
+        const isInsideAnnotation =
+          parenDepth > 0 ||
+          bracketDepth > 0 ||
+          /[()[\]]/.test(rawText);
+
+        if (token.type === 'word' && !isInsideAnnotation) {
+          spoken.push(token);
+        }
+
+        const openParens = (rawText.match(/\(/g) || []).length;
+        const closeParens = (rawText.match(/\)/g) || []).length;
+        const openBrackets = (rawText.match(/\[/g) || []).length;
+        const closeBrackets = (rawText.match(/\]/g) || []).length;
+
+        parenDepth = Math.max(0, parenDepth + openParens - closeParens);
+        bracketDepth = Math.max(0, bracketDepth + openBrackets - closeBrackets);
+      }
+
+      return spoken;
+    }
+
     function updatePartialTranscript(text) {
       let partial = document.getElementById('partialText');
       if (!partial) {
@@ -931,7 +998,7 @@
         partial.className = 'text-gray-500 italic';
         transcriptContent.appendChild(partial);
       }
-      partial.textContent = text.replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '').replace(/\([^)]*$/g, '').trim();
+      partial.textContent = stripNonSpeechAnnotations(text);
       transcriptContent.scrollTop = transcriptContent.scrollHeight;
     }
 
@@ -940,16 +1007,17 @@
       const partial = document.getElementById('partialText');
       if (partial) partial.remove();
 
-      const words = (data.words || []).filter(w => w.type === 'word' && !/^\(.*\)$/.test(w.text));
-      if (words.length === 0) return;
+      const spokenWords = extractSpokenWordTokens(data.words);
+      if (spokenWords.length === 0) return;
 
-      // Build clean text from words only (excludes audio event tags)
-      const cleanText = words.map(w => w.text).join(' ');
+      // Build clean text from spoken words only, excluding non-speech annotations.
+      const cleanText = stripNonSpeechAnnotations(spokenWords.map(w => w.text).join(' '));
+      if (!cleanText) return;
 
       // Shift timestamps by the offset between recording start and first audio sent
       speechSegments.push({
-        start: words[0].start + scribeAudioOffset,
-        end: words[words.length - 1].end + scribeAudioOffset,
+        start: spokenWords[0].start + scribeAudioOffset,
+        end: spokenWords[spokenWords.length - 1].end + scribeAudioOffset,
         text: cleanText
       });
 
@@ -1427,16 +1495,16 @@
       if (!editorState) return;
       editorKeyframeMarkers.innerHTML = '';
       for (const kf of editorState.keyframes) {
+        if (kf.sectionId) continue;
         const pct = (kf.time / editorState.duration) * 100;
         const dot = document.createElement('div');
         dot.className = 'absolute rounded-full';
-        dot.style.width = kf.sectionId ? '7px' : '8px';
-        dot.style.height = kf.sectionId ? '7px' : '8px';
+        dot.style.width = '8px';
+        dot.style.height = '8px';
         dot.style.top = '50%';
         dot.style.transform = 'translate(-50%, -50%)';
         dot.style.left = pct + '%';
         dot.style.backgroundColor = kf.cameraFullscreen ? '#f59e0b' : (kf.pipVisible ? '#3b82f6' : '#ef4444');
-        if (kf.sectionId) dot.style.border = '1px solid rgba(255,255,255,0.8)';
         editorKeyframeMarkers.appendChild(dot);
       }
     }
@@ -1684,6 +1752,12 @@
       }
     });
 
+    contentProtectionToggle.addEventListener('change', async () => {
+      hideFromRecording = contentProtectionToggle.checked ? 'true' : 'false';
+      localStorage.setItem('hideFromRecording', hideFromRecording);
+      await syncContentProtection();
+    });
+
     // Source change handlers
     screenSelect.addEventListener('change', async () => {
       try { await updateScreenStream(); } catch (e) { console.error(e); }
@@ -1706,6 +1780,7 @@
       folderPathEl.textContent = saveFolder;
       openFolderBtn.classList.remove('hidden');
     }
+    syncContentProtection();
     enumerateDevices().then(async () => {
       try { await updateScreenStream(); } catch (e) {}
       try { await updateCameraStream(); } catch (e) {}

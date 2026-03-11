@@ -20,6 +20,12 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'index.html'))
 }
 
+ipcMain.handle('set-content-protection', async (event, enabled) => {
+  if (!win || win.isDestroyed()) return false
+  win.setContentProtection(Boolean(enabled))
+  return true
+})
+
 ipcMain.handle('get-sources', async () => {
   try {
     const sources = await desktopCapturer.getSources({
