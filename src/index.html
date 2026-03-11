@@ -128,7 +128,7 @@
       <button id="editorKeyframeBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Add Keyframe</button>
       <button id="editorToggleCamBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Toggle Camera</button>
       <button id="editorCamFullBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Camera Full</button>
-      <button id="editorDeleteKfBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Delete Keyframe</button>
+      <button id="editorDeleteKfBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Delete Manual Keyframe</button>
     </div>
 
     <!-- Timeline scrubber -->
@@ -1429,64 +1429,68 @@
       renderKeyframeMarkers();
     }
 
-    function toggleCameraVisibility() {
-      if (!editorState || editorState.rendering) return;
-      const time = editorState.currentTime;
-      const current = getStateAtTime(time);
+    function getMutableCameraKeyframe() {
+      if (!editorState) return null;
 
-      // Check if there's already a keyframe at this exact time
-      let existing = editorState.keyframes.find(kf => Math.abs(kf.time - time) < 0.001);
-      if (existing) {
-        existing.pipVisible = !existing.pipVisible;
-      } else {
-        editorState.keyframes.push({
-          time,
-          pipX: current.pipX,
-          pipY: current.pipY,
-          pipVisible: !current.pipVisible,
-          cameraFullscreen: current.cameraFullscreen || false
-        });
-        editorState.keyframes.sort((a, b) => a.time - b.time);
+      const selectedSection = getSelectedSection();
+      if (selectedSection) {
+        return getSectionAnchorKeyframe(selectedSection.id, true);
       }
 
-      renderKeyframeMarkers();
-    }
-
-    function toggleCameraFullscreen() {
-      if (!editorState || editorState.rendering) return;
       const time = editorState.currentTime;
-      const current = getStateAtTime(time);
-
       let existing = editorState.keyframes.find(kf => Math.abs(kf.time - time) < 0.001);
-      if (existing) {
-        existing.cameraFullscreen = !(existing.cameraFullscreen || false);
-      } else {
-        editorState.keyframes.push({
-          time,
-          pipX: current.pipX,
-          pipY: current.pipY,
-          pipVisible: current.pipVisible,
-          cameraFullscreen: !(current.cameraFullscreen || false)
-        });
-        editorState.keyframes.sort((a, b) => a.time - b.time);
-      }
+      if (existing) return existing;
 
-      renderKeyframeMarkers();
+      const current = getStateAtTime(time);
+      const manual = {
+        time,
+        pipX: current.pipX,
+        pipY: current.pipY,
+        pipVisible: current.pipVisible,
+        cameraFullscreen: current.cameraFullscreen || false
+      };
+      editorState.keyframes.push(manual);
+      editorState.keyframes.sort((a, b) => a.time - b.time);
+      return manual;
     }
 
-    function deleteNearestKeyframe() {
-      if (!editorState || editorState.rendering || editorState.keyframes.length === 0) return;
-      const time = editorState.currentTime;
-      let nearestIdx = 0;
-      let nearestDist = Math.abs(editorState.keyframes[0].time - time);
-      for (let i = 1; i < editorState.keyframes.length; i++) {
+    function findNearestManualKeyframeIndex(time) {
+      if (!editorState) return -1;
+      let nearestIdx = -1;
+      let nearestDist = Infinity;
+      for (let i = 0; i < editorState.keyframes.length; i++) {
+        if (editorState.keyframes[i].sectionId) continue;
         const dist = Math.abs(editorState.keyframes[i].time - time);
         if (dist < nearestDist) {
           nearestDist = dist;
           nearestIdx = i;
         }
       }
-      if (editorState.keyframes[nearestIdx].sectionId) return;
+      return nearestIdx;
+    }
+
+    function toggleCameraVisibility() {
+      if (!editorState || editorState.rendering) return;
+      const target = getMutableCameraKeyframe();
+      if (!target) return;
+      target.pipVisible = !target.pipVisible;
+
+      renderKeyframeMarkers();
+    }
+
+    function toggleCameraFullscreen() {
+      if (!editorState || editorState.rendering) return;
+      const target = getMutableCameraKeyframe();
+      if (!target) return;
+      target.cameraFullscreen = !(target.cameraFullscreen || false);
+
+      renderKeyframeMarkers();
+    }
+
+    function deleteNearestKeyframe() {
+      if (!editorState || editorState.rendering || editorState.keyframes.length === 0) return;
+      const nearestIdx = findNearestManualKeyframeIndex(editorState.currentTime);
+      if (nearestIdx < 0) return;
       editorState.keyframes.splice(nearestIdx, 1);
       renderKeyframeMarkers();
     }
