@@ -863,7 +863,9 @@
             + `&include_timestamps=true`
             + `&vad_silence_threshold_secs=1.0`
             + `&vad_threshold=0.4`
-            + `&min_speech_duration_ms=200`;
+            + `&min_speech_duration_ms=200`
+            + `&language_code=eng`
+            + `&tag_audio_events=false`;
 
           scribeWs = new WebSocket(wsUrl);
 
