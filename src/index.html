@@ -862,10 +862,9 @@
             + `&commit_strategy=vad`
             + `&include_timestamps=true`
             + `&vad_silence_threshold_secs=1.0`
-            + `&vad_threshold=0.4`
+            + `&vad_threshold=0.8`
             + `&min_speech_duration_ms=200`
-            + `&language_code=eng`
-            + `&tag_audio_events=false`;
+            + `&language_code=eng`;
 
           scribeWs = new WebSocket(wsUrl);
 
@@ -932,7 +931,7 @@
         partial.className = 'text-gray-500 italic';
         transcriptContent.appendChild(partial);
       }
-      partial.textContent = text;
+      partial.textContent = text.replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '').replace(/\([^)]*$/g, '').trim();
       transcriptContent.scrollTop = transcriptContent.scrollHeight;
     }
 
@@ -941,21 +940,24 @@
       const partial = document.getElementById('partialText');
       if (partial) partial.remove();
 
-      const words = (data.words || []).filter(w => w.type === 'word');
-      if (words.length > 0) {
-        // Shift timestamps by the offset between recording start and first audio sent
-        speechSegments.push({
-          start: words[0].start + scribeAudioOffset,
-          end: words[words.length - 1].end + scribeAudioOffset,
-          text: data.text
-        });
-      }
+      const words = (data.words || []).filter(w => w.type === 'word' && !/^\(.*\)$/.test(w.text));
+      if (words.length === 0) return;
+
+      // Build clean text from words only (excludes audio event tags)
+      const cleanText = words.map(w => w.text).join(' ');
+
+      // Shift timestamps by the offset between recording start and first audio sent
+      speechSegments.push({
+        start: words[0].start + scribeAudioOffset,
+        end: words[words.length - 1].end + scribeAudioOffset,
+        text: cleanText
+      });
 
       // Add committed text
       const div = document.createElement('div');
       div.className = 'mb-2 text-gray-200';
       div.dataset.segmentIndex = speechSegments.length - 1;
-      div.textContent = data.text || '';
+      div.textContent = cleanText;
       transcriptContent.appendChild(div);
       transcriptContent.scrollTop = transcriptContent.scrollHeight;
 
