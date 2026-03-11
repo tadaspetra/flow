@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MAIN=$(git worktree list --porcelain | head -1 | sed 's/^worktree //'); [ -f \"$MAIN/.env\" ] && [ ! -f .env ] && cp \"$MAIN/.env\" .env; [ -f package.json ] && [ ! -d node_modules ] && pnpm install",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "EnterWorktree",
@@ -7,7 +19,7 @@
           {
             "type": "command",
             "command": "MAIN=$(git worktree list --porcelain | head -1 | sed 's/^worktree //'); [ -f \"$MAIN/.env\" ] && cp \"$MAIN/.env\" .env; pnpm install",
-            "timeout": 120000
+            "timeout": 120
           }
         ]
       }
