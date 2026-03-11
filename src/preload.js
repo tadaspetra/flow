@@ -1,9 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron')
+const { pathToFileURL } = require('node:url')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   saveVideo: (buffer, folder, suffix) => ipcRenderer.invoke('save-video', buffer, folder, suffix),
   pickFolder: (opts) => ipcRenderer.invoke('pick-folder', opts),
   pickProjectLocation: (opts) => ipcRenderer.invoke('pick-project-location', opts),
+  pathToFileUrl: (filePath) => pathToFileURL(String(filePath || '')).toString(),
   openFolder: (folder) => ipcRenderer.invoke('open-folder', folder),
   projectCreate: (opts) => ipcRenderer.invoke('project-create', opts),
   projectOpen: (projectFolder) => ipcRenderer.invoke('project-open', projectFolder),
