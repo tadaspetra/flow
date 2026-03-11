@@ -1419,9 +1419,13 @@
 
       // Add committed text
       const div = document.createElement('div');
-      div.className = 'mb-2 text-gray-200';
+      div.className = 'mb-2 text-gray-200 cursor-pointer rounded px-1 -mx-1 hover:bg-gray-700/50';
       div.dataset.segmentIndex = speechSegments.length - 1;
       div.textContent = cleanText;
+      div.addEventListener('click', () => {
+        const idx = parseInt(div.dataset.segmentIndex, 10);
+        selectSegment(selectedSegmentIndex === idx ? -1 : idx);
+      });
       transcriptContent.appendChild(div);
       transcriptContent.scrollTop = transcriptContent.scrollHeight;
 
@@ -2455,6 +2459,32 @@
       editorSeek(0);
     }
 
+    // ===== Segment selection =====
+
+    transcriptContent.addEventListener('click', (e) => {
+      if (!e.target.closest('[data-segment-index]')) selectSegment(-1);
+    });
+
+    let selectedSegmentIndex = -1;
+
+    function selectSegment(index) {
+      // Deselect previous
+      if (selectedSegmentIndex >= 0) {
+        const prev = transcriptContent.querySelector(`[data-segment-index="${selectedSegmentIndex}"]`);
+        if (prev) prev.style.outline = '';
+      }
+      selectedSegmentIndex = index;
+      if (index >= 0) {
+        const el = transcriptContent.querySelector(`[data-segment-index="${index}"]`);
+        if (el) el.style.outline = '2px solid rgba(96, 165, 250, 0.7)';
+      }
+    }
+
+    function applySegmentDeletedStyle(el, deleted) {
+      el.style.textDecoration = deleted ? 'line-through' : '';
+      el.style.opacity = deleted ? '0.4' : '';
+    }
+
     // ===== Keyboard shortcuts =====
 
     function updateSegmentBadge() {
@@ -2469,21 +2499,34 @@
     }
 
     document.addEventListener('keydown', (e) => {
-      // Backspace during recording: remove last non-deleted segment
+      // Backspace during recording: toggle delete on selected segment, or remove last non-deleted
       if (recording && e.code === 'Backspace') {
         e.preventDefault();
-        for (let i = speechSegments.length - 1; i >= 0; i--) {
-          if (!speechSegments[i].deleted) {
-            speechSegments[i].deleted = true;
-            const el = transcriptContent.querySelector(`[data-segment-index="${i}"]`);
-            if (el) {
-              el.style.textDecoration = 'line-through';
-              el.style.opacity = '0.4';
+        if (selectedSegmentIndex >= 0 && selectedSegmentIndex < speechSegments.length) {
+          // Toggle delete on selected segment
+          const seg = speechSegments[selectedSegmentIndex];
+          seg.deleted = !seg.deleted;
+          const el = transcriptContent.querySelector(`[data-segment-index="${selectedSegmentIndex}"]`);
+          if (el) applySegmentDeletedStyle(el, seg.deleted);
+          updateSegmentBadge();
+        } else {
+          // No selection: delete last non-deleted segment
+          for (let i = speechSegments.length - 1; i >= 0; i--) {
+            if (!speechSegments[i].deleted) {
+              speechSegments[i].deleted = true;
+              const el = transcriptContent.querySelector(`[data-segment-index="${i}"]`);
+              if (el) applySegmentDeletedStyle(el, true);
+              updateSegmentBadge();
+              break;
             }
-            updateSegmentBadge();
-            break;
           }
         }
+        return;
+      }
+
+      // Escape during recording: deselect segment
+      if (recording && e.code === 'Escape') {
+        selectSegment(-1);
         return;
       }
 
