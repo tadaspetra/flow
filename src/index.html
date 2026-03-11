@@ -293,8 +293,17 @@
     const CANVAS_W = 1920;
     const CANVAS_H = 1080;
     const PIP_FRACTION = 0.25;
-    const PIP_MARGIN = 20;
+    const PIP_MARGIN = 40;
     const PIP_SIZE = Math.round(CANVAS_W * PIP_FRACTION);
+
+    function snapToNearestCorner(cursorX, cursorY) {
+      const midX = CANVAS_W / 2;
+      const midY = CANVAS_H / 2;
+      return {
+        x: cursorX < midX ? PIP_MARGIN : CANVAS_W - PIP_SIZE - PIP_MARGIN,
+        y: cursorY < midY ? PIP_MARGIN : CANVAS_H - PIP_SIZE - PIP_MARGIN
+      };
+    }
     const TRANSITION_DURATION = 0.3;
     const TRIM_PADDING = 0.15;
 
@@ -307,8 +316,6 @@
     let editorState = null;
     let editorDrawRAF = null;
     let draggingPip = false;
-    let dragOffsetX = 0;
-    let dragOffsetY = 0;
     let waveformPeaks = null;
 
     function easeInOut(t) {
@@ -2370,8 +2377,6 @@
       const pipH = editorState.pipSize;
       if (x >= kf.pipX && x <= kf.pipX + pipW && y >= kf.pipY && y <= kf.pipY + pipH) {
         draggingPip = true;
-        dragOffsetX = x - kf.pipX;
-        dragOffsetY = y - kf.pipY;
         e.preventDefault();
       }
     });
@@ -2379,37 +2384,27 @@
     window.addEventListener('mousemove', (e) => {
       if (!draggingPip || !editorState) return;
       const { x, y } = canvasToEditorCoords(e.clientX, e.clientY);
-      const pipW = editorState.pipSize;
-      const pipH = editorState.pipSize;
+      const snapped = snapToNearestCorner(x, y);
 
-      let newX = x - dragOffsetX;
-      let newY = y - dragOffsetY;
-
-      // Constrain to canvas bounds
-      newX = Math.max(0, Math.min(newX, CANVAS_W - pipW));
-      newY = Math.max(0, Math.min(newY, CANVAS_H - pipH));
-
-      // If sections are available, dragging updates the selected section anchor.
       const selectedSection = getSelectedSection();
       if (selectedSection) {
         const anchor = getSectionAnchorKeyframe(selectedSection.id, true);
         if (anchor) {
-          anchor.pipX = newX;
-          anchor.pipY = newY;
+          anchor.pipX = snapped.x;
+          anchor.pipY = snapped.y;
         }
       } else {
-        // Fallback: update or create a manual keyframe at the playhead.
         const time = editorState.currentTime;
         let existing = editorState.keyframes.find(kf => Math.abs(kf.time - time) < 0.001);
         if (existing) {
-          existing.pipX = newX;
-          existing.pipY = newY;
+          existing.pipX = snapped.x;
+          existing.pipY = snapped.y;
         } else {
           const current = getStateAtTime(time);
           editorState.keyframes.push({
             time,
-            pipX: newX,
-            pipY: newY,
+            pipX: snapped.x,
+            pipY: snapped.y,
             pipVisible: current.pipVisible,
             cameraFullscreen: current.cameraFullscreen || false
           });
