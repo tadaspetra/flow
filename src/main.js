@@ -625,12 +625,24 @@ ipcMain.handle('get-scribe-token', async () => {
 ipcMain.handle('trim-silence', async (event, opts) => {
   const { screenPath, cameraPath, segments, outputFolder } = opts
   const ffmpegPath = require('ffmpeg-static')
-  const PADDING = 0.15 // 150ms padding
+  const paddingSeconds = Number.isFinite(Number(opts?.paddingSeconds))
+    ? Math.max(0, Number(opts.paddingSeconds))
+    : 0.15
 
   // Add padding and merge overlapping segments
-  let padded = segments.map(s => ({
-    start: Math.max(0, s.start - PADDING),
-    end: s.end + PADDING
+  const safeSegments = Array.isArray(segments) ? segments : []
+  if (safeSegments.length === 0) {
+    return {
+      sections: [],
+      trimmedDuration: 0,
+      screenPath: null,
+      cameraPath: null
+    }
+  }
+
+  let padded = safeSegments.map(s => ({
+    start: Math.max(0, s.start - paddingSeconds),
+    end: s.end + paddingSeconds
   }))
 
   // Sort by start time
@@ -640,7 +652,7 @@ ipcMain.handle('trim-silence', async (event, opts) => {
   const merged = [padded[0]]
   for (let i = 1; i < padded.length; i++) {
     const last = merged[merged.length - 1]
-    if (padded[i].start <= last.end) {
+    if (padded[i].start < last.end) {
       last.end = Math.max(last.end, padded[i].end)
     } else {
       merged.push(padded[i])

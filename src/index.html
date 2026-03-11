@@ -141,7 +141,7 @@
 
   <!-- Processing View -->
   <div id="processingView" class="hidden flex-1 flex flex-col items-center justify-center p-6 gap-4">
-    <div class="text-xl font-medium">Trimming silence...</div>
+    <div id="processingTitle" class="text-xl font-medium">Trimming silence...</div>
     <div id="processingStatus" class="text-sm text-gray-400">Processing segments</div>
     <div class="w-64 bg-gray-800 rounded-full h-3 overflow-hidden">
       <div id="processingBar" class="bg-blue-500 h-full rounded-full transition-all duration-300 animate-pulse" style="width: 100%"></div>
@@ -234,6 +234,7 @@
     const transcriptContent = document.getElementById('transcriptContent');
     const segmentBadge = document.getElementById('segmentBadge');
     const processingView = document.getElementById('processingView');
+    const processingTitle = document.getElementById('processingTitle');
     const processingStatus = document.getElementById('processingStatus');
 
     // Editor DOM refs
@@ -1497,6 +1498,182 @@
       return result?.outputPath || nextPath;
     }
 
+    function showProcessingState(title, status) {
+      processingTitle.textContent = title || 'Processing...';
+      processingStatus.textContent = status || '';
+      setWorkspaceView('processing');
+    }
+
+    function buildSectionAnchorSnapshot(keyframes) {
+      const anchors = new Map();
+      for (const keyframe of Array.isArray(keyframes) ? keyframes : []) {
+        if (!keyframe.sectionId) continue;
+        anchors.set(keyframe.sectionId, {
+          pipX: keyframe.pipX,
+          pipY: keyframe.pipY,
+          pipVisible: keyframe.pipVisible !== false,
+          cameraFullscreen: !!keyframe.cameraFullscreen
+        });
+      }
+      return anchors;
+    }
+
+    function remapManualKeyframesAfterSectionDelete(keyframes, removedSection) {
+      const epsilon = 0.001;
+      const removedDuration = Math.max(0, Number(removedSection?.end) - Number(removedSection?.start));
+
+      return (Array.isArray(keyframes) ? keyframes : [])
+        .filter(keyframe => !keyframe.sectionId)
+        .map((keyframe) => {
+          const time = Number(keyframe.time) || 0;
+          if (time >= removedSection.start - epsilon && time < removedSection.end - epsilon) {
+            return null;
+          }
+
+          const nextTime = time >= removedSection.end - epsilon
+            ? roundMs(time - removedDuration)
+            : roundMs(time);
+
+          return {
+            ...keyframe,
+            time: Math.max(0, nextTime)
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.time - b.time);
+    }
+
+    async function deleteSelectedSection() {
+      if (!editorState || editorState.rendering) return;
+      const selectedSection = getSelectedSection();
+      if (!selectedSection) return;
+
+      const previousState = {
+        sections: Array.isArray(editorState.sections) ? editorState.sections.map(section => ({ ...section })) : [],
+        keyframes: Array.isArray(editorState.keyframes) ? editorState.keyframes.map(keyframe => ({ ...keyframe })) : [],
+        screenPath: editorState.screenPath || null,
+        cameraPath: editorState.cameraPath || null,
+        hasCamera: !!editorState.hasCamera,
+        screenFitMode: editorState.screenFitMode,
+        sourceWidth: editorState.sourceWidth || null,
+        sourceHeight: editorState.sourceHeight || null,
+        screenBlobUrl: editorState.screenBlobUrl || '',
+        cameraBlobUrl: editorState.cameraBlobUrl || ''
+      };
+
+      const selectedIndex = previousState.sections.findIndex(section => section.id === selectedSection.id);
+      if (selectedIndex < 0) return;
+
+      const remainingSections = previousState.sections.filter(section => section.id !== selectedSection.id);
+      const manualKeyframes = remapManualKeyframesAfterSectionDelete(previousState.keyframes, selectedSection);
+      const sectionAnchors = buildSectionAnchorSnapshot(previousState.keyframes);
+
+      showProcessingState('Updating timeline...', `Removing ${selectedSection.label}`);
+
+      try {
+        if (remainingSections.length === 0) {
+          if (previousState.screenBlobUrl.startsWith('blob:')) URL.revokeObjectURL(previousState.screenBlobUrl);
+          if (previousState.cameraBlobUrl.startsWith('blob:')) URL.revokeObjectURL(previousState.cameraBlobUrl);
+
+          editorState = null;
+          editorScreenVideo.src = '';
+          editorCameraVideo.src = '';
+
+          if (activeProject) {
+            activeProject = {
+              ...activeProject,
+              timeline: {
+                duration: 0,
+                sections: [],
+                keyframes: [],
+                selectedSectionId: null,
+                screenPath: null,
+                cameraPath: null,
+                hasCamera: false,
+                sourceWidth: previousState.sourceWidth,
+                sourceHeight: previousState.sourceHeight
+              }
+            };
+          }
+
+          await persistProjectNow();
+          setWorkspaceView('recording');
+          return;
+        }
+
+        const trimmed = await window.electronAPI.trimSilence({
+          screenPath: previousState.screenPath,
+          cameraPath: previousState.hasCamera ? previousState.cameraPath : null,
+          segments: remainingSections.map(section => ({
+            start: section.start,
+            end: section.end
+          })),
+          outputFolder: saveFolder,
+          paddingSeconds: 0
+        });
+
+        const remappedSections = normalizeSections(
+          Array.isArray(trimmed?.sections) ? trimmed.sections : [],
+          trimmed?.trimmedDuration || 0
+        );
+        const rebuiltSections = remainingSections.map((section, index) => {
+          const remapped = remappedSections[index] || {};
+          return {
+            ...section,
+            id: `section-${index + 1}`,
+            index,
+            label: `Section ${index + 1}`,
+            start: Number.isFinite(Number(remapped.start)) ? Number(remapped.start) : section.start,
+            end: Number.isFinite(Number(remapped.end)) ? Number(remapped.end) : section.end,
+            duration: Number.isFinite(Number(remapped.duration))
+              ? Number(remapped.duration)
+              : Math.max(0, Number(section.end) - Number(section.start)),
+            sourceStart: Number.isFinite(Number(remapped.sourceStart)) ? Number(remapped.sourceStart) : section.start,
+            sourceEnd: Number.isFinite(Number(remapped.sourceEnd)) ? Number(remapped.sourceEnd) : section.end
+          };
+        });
+
+        const rebuiltAnchors = rebuiltSections.map((section, index) => {
+          const previousSection = remainingSections[index];
+          const anchor = sectionAnchors.get(previousSection.id);
+          return {
+            time: section.start,
+            pipX: anchor ? anchor.pipX : editorState.defaultPipX,
+            pipY: anchor ? anchor.pipY : editorState.defaultPipY,
+            pipVisible: anchor ? anchor.pipVisible : true,
+            cameraFullscreen: anchor ? anchor.cameraFullscreen : false,
+            sectionId: section.id,
+            autoSection: true
+          };
+        });
+
+        const nextSelectedSection = rebuiltSections[Math.min(selectedIndex, rebuiltSections.length - 1)] || rebuiltSections[0];
+
+        enterEditor(
+          null,
+          null,
+          trimmed?.screenPath || null,
+          trimmed?.cameraPath || null,
+          trimmed?.trimmedDuration || rebuiltSections[rebuiltSections.length - 1]?.end || 0,
+          rebuiltSections,
+          {
+            keyframes: [...manualKeyframes, ...rebuiltAnchors].sort((a, b) => a.time - b.time),
+            selectedSectionId: nextSelectedSection?.id || null,
+            hasCamera: !!trimmed?.cameraPath,
+            screenFitMode: previousState.screenFitMode,
+            sourceWidth: previousState.sourceWidth,
+            sourceHeight: previousState.sourceHeight,
+            initialView: 'timeline'
+          }
+        );
+
+        await persistProjectNow();
+      } catch (error) {
+        console.error('Failed to delete selected section:', error);
+        setWorkspaceView('timeline');
+      }
+    }
+
     async function appendTakeToTimeline({ screenPath, cameraPath, recordedDuration, trimSections }) {
       const takeSections = normalizeTakeSections(trimSections, recordedDuration);
       const takeDuration = takeSections.length > 0
@@ -1665,8 +1842,10 @@
         const fallbackSections = buildRemappedSectionsFromSegments(activeSegments);
         if (activeSegments.length > 0) {
           // Show processing view while trimming.
-          setWorkspaceView('processing');
-          processingStatus.textContent = `Processing ${activeSegments.length} segment${activeSegments.length !== 1 ? 's' : ''}`;
+          showProcessingState(
+            'Trimming silence...',
+            `Processing ${activeSegments.length} segment${activeSegments.length !== 1 ? 's' : ''}`
+          );
 
           try {
             const trimmed = await window.electronAPI.trimSilence({
@@ -2321,6 +2500,9 @@
       } else if (e.code === 'ArrowRight') {
         e.preventDefault();
         editorSeek(editorState.currentTime + 1 / 30);
+      } else if (e.code === 'Backspace' || e.code === 'Delete') {
+        e.preventDefault();
+        deleteSelectedSection();
       } else if (e.code === 'KeyK') {
         e.preventDefault();
         addKeyframe();
