@@ -317,6 +317,7 @@
     let editorDrawRAF = null;
     let draggingPip = false;
     let waveformPeaks = null;
+    let trimDragState = null;
 
     function easeInOut(t) {
       return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
@@ -923,6 +924,18 @@
         label.style.transform = 'translateY(-50%)';
         label.textContent = String(section.index + 1);
         band.appendChild(label);
+        if (selected) {
+          const leftHandle = document.createElement('div');
+          leftHandle.dataset.trimEdge = 'left';
+          leftHandle.dataset.sectionId = section.id;
+          leftHandle.style.cssText = 'position:absolute;top:0;bottom:0;left:0;width:6px;cursor:col-resize;z-index:30;border-left:3px solid rgba(191,219,254,0.9);';
+          band.appendChild(leftHandle);
+          const rightHandle = document.createElement('div');
+          rightHandle.dataset.trimEdge = 'right';
+          rightHandle.dataset.sectionId = section.id;
+          rightHandle.style.cssText = 'position:absolute;top:0;bottom:0;right:0;width:6px;cursor:col-resize;z-index:30;border-right:3px solid rgba(191,219,254,0.9);';
+          band.appendChild(rightHandle);
+        }
         editorSectionMarkers.appendChild(band);
 
         if (section.index < editorState.sections.length - 1) {
@@ -936,6 +949,164 @@
         }
       }
       renderSectionTranscriptList();
+    }
+
+    function startTrimDrag(e, sectionId, edge) {
+      const section = editorState.sections.find(s => s.id === sectionId);
+      if (!section) return;
+      editorPause();
+      e.preventDefault();
+      trimDragState = {
+        sectionId,
+        edge,
+        originalStart: section.start,
+        originalEnd: section.end
+      };
+      document.body.style.cursor = 'col-resize';
+      const onMove = (e2) => { e2.preventDefault(); updateTrimDrag(e2); };
+      const onUp = () => {
+        document.body.style.cursor = '';
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        finishTrimDrag();
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+
+    function updateTrimDrag(e) {
+      if (!trimDragState || !editorState) return;
+      const rect = editorTimeline.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const time = roundMs(pct * editorState.duration);
+      const section = editorState.sections.find(s => s.id === trimDragState.sectionId);
+      if (!section) return;
+      const MIN_DURATION = 0.1;
+      if (trimDragState.edge === 'left') {
+        section.start = roundMs(Math.max(trimDragState.originalStart, Math.min(trimDragState.originalEnd - MIN_DURATION, time)));
+      } else {
+        section.end = roundMs(Math.max(trimDragState.originalStart + MIN_DURATION, Math.min(trimDragState.originalEnd, time)));
+      }
+      section.duration = roundMs(section.end - section.start);
+      renderSectionMarkers();
+    }
+
+    async function finishTrimDrag() {
+      if (!trimDragState || !editorState) { trimDragState = null; return; }
+      const section = editorState.sections.find(s => s.id === trimDragState.sectionId);
+      if (!section) { trimDragState = null; return; }
+      const startChanged = Math.abs(section.start - trimDragState.originalStart) > 0.01;
+      const endChanged = Math.abs(section.end - trimDragState.originalEnd) > 0.01;
+      const dragState = { ...trimDragState };
+      trimDragState = null;
+      if (!startChanged && !endChanged) return;
+      await applyEdgeTrim(dragState);
+    }
+
+    async function applyEdgeTrim(dragState) {
+      if (!editorState || editorState.rendering) return;
+      const previousState = {
+        sections: editorState.sections.map(s => ({ ...s })),
+        keyframes: editorState.keyframes.map(kf => ({ ...kf })),
+        screenPath: editorState.screenPath,
+        cameraPath: editorState.cameraPath,
+        hasCamera: editorState.hasCamera,
+        screenFitMode: editorState.screenFitMode,
+        sourceWidth: editorState.sourceWidth,
+        sourceHeight: editorState.sourceHeight,
+        defaultPipX: editorState.defaultPipX,
+        defaultPipY: editorState.defaultPipY
+      };
+      const sectionAnchors = buildSectionAnchorSnapshot(previousState.keyframes);
+      const trimmedSection = previousState.sections.find(s => s.id === dragState.sectionId);
+      showProcessingState('Trimming clip...', `Adjusting ${trimmedSection?.label || 'section'}`);
+
+      try {
+        const segments = previousState.sections.map(s => ({ start: s.start, end: s.end }));
+        const trimmed = await window.electronAPI.trimSilence({
+          screenPath: previousState.screenPath,
+          cameraPath: previousState.hasCamera ? previousState.cameraPath : null,
+          segments,
+          outputFolder: saveFolder,
+          paddingSeconds: 0
+        });
+
+        const remappedSections = normalizeSections(
+          Array.isArray(trimmed?.sections) ? trimmed.sections : [],
+          trimmed?.trimmedDuration || 0
+        );
+        const rebuiltSections = previousState.sections.map((s, index) => {
+          const remapped = remappedSections[index] || {};
+          return {
+            ...s,
+            id: `section-${index + 1}`,
+            index,
+            label: `Section ${index + 1}`,
+            start: Number.isFinite(Number(remapped.start)) ? Number(remapped.start) : s.start,
+            end: Number.isFinite(Number(remapped.end)) ? Number(remapped.end) : s.end,
+            duration: Number.isFinite(Number(remapped.duration))
+              ? Number(remapped.duration)
+              : Math.max(0, s.end - s.start),
+            sourceStart: Number.isFinite(Number(remapped.sourceStart)) ? Number(remapped.sourceStart) : s.start,
+            sourceEnd: Number.isFinite(Number(remapped.sourceEnd)) ? Number(remapped.sourceEnd) : s.end
+          };
+        });
+
+        const rebuiltAnchors = rebuiltSections.map((s, index) => {
+          const origSection = previousState.sections[index];
+          const anchor = sectionAnchors.get(origSection.id);
+          return {
+            time: s.start,
+            pipX: anchor ? anchor.pipX : previousState.defaultPipX,
+            pipY: anchor ? anchor.pipY : previousState.defaultPipY,
+            pipVisible: anchor ? anchor.pipVisible : true,
+            cameraFullscreen: anchor ? anchor.cameraFullscreen : false,
+            sectionId: s.id,
+            autoSection: true
+          };
+        });
+
+        const manualKeyframes = previousState.keyframes
+          .filter(kf => !kf.sectionId)
+          .map(kf => {
+            const time = kf.time;
+            for (let i = 0; i < segments.length; i++) {
+              if (time >= segments[i].start - 0.001 && time <= segments[i].end + 0.001) {
+                const remapped = remappedSections[i];
+                if (!remapped) return null;
+                return { ...kf, time: roundMs(Math.max(0, remapped.start + (time - segments[i].start))) };
+              }
+            }
+            return null;
+          })
+          .filter(Boolean)
+          .sort((a, b) => a.time - b.time);
+
+        const trimmedIndex = previousState.sections.findIndex(s => s.id === dragState.sectionId);
+        const nextSelected = rebuiltSections[trimmedIndex] || rebuiltSections[0];
+
+        enterEditor(
+          null, null,
+          trimmed?.screenPath || null,
+          trimmed?.cameraPath || null,
+          trimmed?.trimmedDuration || rebuiltSections[rebuiltSections.length - 1]?.end || 0,
+          rebuiltSections,
+          {
+            keyframes: [...manualKeyframes, ...rebuiltAnchors].sort((a, b) => a.time - b.time),
+            selectedSectionId: nextSelected?.id || null,
+            hasCamera: !!trimmed?.cameraPath,
+            screenFitMode: previousState.screenFitMode,
+            sourceWidth: previousState.sourceWidth,
+            sourceHeight: previousState.sourceHeight,
+            initialView: 'timeline'
+          }
+        );
+
+        await persistProjectNow();
+      } catch (error) {
+        console.error('Failed to trim section edge:', error);
+        setWorkspaceView('timeline');
+      }
     }
 
     function getRenderKeyframes() {
@@ -2424,6 +2595,14 @@
 
     editorTimeline.addEventListener('mousedown', (e) => {
       if (!editorState || editorState.rendering) return;
+      const trimEdge = e.target?.dataset?.trimEdge;
+      if (trimEdge) {
+        const trimSectionId = e.target.dataset.sectionId;
+        if (trimSectionId) {
+          startTrimDrag(e, trimSectionId, trimEdge);
+          return;
+        }
+      }
       const sectionId = e.target && e.target.dataset ? e.target.dataset.sectionId : null;
       if (sectionId) selectEditorSection(sectionId);
       seekFromTimeline(e);
