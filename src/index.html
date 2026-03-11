@@ -171,6 +171,8 @@
       <button id="editorPlayBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Play</button>
       <button id="editorToggleCamBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Toggle Camera</button>
       <button id="editorCamFullBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Camera Full</button>
+      <button id="editorDeleteKfBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Delete Manual Keyframe</button>
+      <button id="editorApplyFutureBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Apply Style to Future</button>
     </div>
 
     <!-- Timeline scrubber -->
@@ -245,6 +247,8 @@
     const editorPlayBtn = document.getElementById('editorPlayBtn');
     const editorToggleCamBtn = document.getElementById('editorToggleCamBtn');
     const editorCamFullBtn = document.getElementById('editorCamFullBtn');
+    const editorDeleteKfBtn = document.getElementById('editorDeleteKfBtn');
+    const editorApplyFutureBtn = document.getElementById('editorApplyFutureBtn');
     const editorRenderBtn = document.getElementById('editorRenderBtn');
     const editorTimeEl = document.getElementById('editorTime');
     const editorTimeline = document.getElementById('editorTimeline');
@@ -796,6 +800,33 @@
       editorState.selectedSectionId = sectionId;
       renderSectionMarkers();
       updateEditorTimeDisplay();
+      scheduleProjectSave();
+    }
+
+    function applyStyleToFutureSections() {
+      if (!editorState || !editorState.sections || editorState.sections.length === 0) return;
+
+      const currentSection = getSelectedSection();
+      if (!currentSection) return;
+
+      const currentAnchor = getSectionAnchorKeyframe(currentSection.id, true);
+      if (!currentAnchor) return;
+
+      const currentIndex = editorState.sections.findIndex(s => s.id === currentSection.id);
+      const futureSections = editorState.sections.slice(currentIndex + 1);
+      if (futureSections.length === 0) return;
+
+      for (const section of futureSections) {
+        const anchor = getSectionAnchorKeyframe(section.id, true);
+        if (!anchor) continue;
+        anchor.pipX = currentAnchor.pipX;
+        anchor.pipY = currentAnchor.pipY;
+        anchor.pipVisible = currentAnchor.pipVisible;
+        anchor.cameraFullscreen = currentAnchor.cameraFullscreen;
+      }
+
+      renderKeyframeMarkers();
+      drawEditorFrame();
       scheduleProjectSave();
     }
 
@@ -2524,6 +2555,8 @@
     editorPlayBtn.addEventListener('click', editorTogglePlay);
     editorToggleCamBtn.addEventListener('click', toggleCameraVisibility);
     editorCamFullBtn.addEventListener('click', toggleCameraFullscreen);
+    editorDeleteKfBtn.addEventListener('click', deleteNearestKeyframe);
+    editorApplyFutureBtn.addEventListener('click', applyStyleToFutureSections);
 
     // ===== Render pipeline =====
 
