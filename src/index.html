@@ -154,6 +154,7 @@
     <div class="flex items-center gap-4">
       <button id="editorBackBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Back to Recording</button>
       <span id="editorTime" class="text-sm text-gray-400 font-mono flex-1 text-center">00:00 / 00:00</span>
+      <button id="editorExportPremiereBtn" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded text-sm font-medium transition-colors">Export to Premiere</button>
       <button id="editorRenderBtn" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium transition-colors">Render</button>
     </div>
 
@@ -251,6 +252,7 @@
     const editorCamFullBtn = document.getElementById('editorCamFullBtn');
     const editorDeleteKfBtn = document.getElementById('editorDeleteKfBtn');
     const editorRenderBtn = document.getElementById('editorRenderBtn');
+    const editorExportPremiereBtn = document.getElementById('editorExportPremiereBtn');
     const editorTimeEl = document.getElementById('editorTime');
     const editorTimeline = document.getElementById('editorTimeline');
     const editorSectionMarkers = document.getElementById('editorSectionMarkers');
@@ -2479,6 +2481,7 @@
       editorCamFullBtn.disabled = true;
       editorDeleteKfBtn.disabled = true;
       editorRenderBtn.disabled = true;
+      editorExportPremiereBtn.disabled = true;
       editorBackBtn.disabled = true;
 
       try {
@@ -2514,11 +2517,44 @@
       editorCamFullBtn.disabled = false;
       editorDeleteKfBtn.disabled = false;
       editorRenderBtn.disabled = false;
+      editorExportPremiereBtn.disabled = false;
       editorBackBtn.disabled = false;
       editorState.rendering = false;
 
       editorSeek(0);
     }
+
+    // ===== Export to Premiere =====
+
+    editorExportPremiereBtn.addEventListener('click', async () => {
+      if (!editorState || editorState.rendering) return;
+      editorExportPremiereBtn.disabled = true;
+      editorExportPremiereBtn.textContent = 'Converting to MP4...';
+      try {
+        const xmlPath = await window.electronAPI.exportPremiere({
+          screenPath: editorState.screenPath,
+          cameraPath: editorState.hasCamera ? editorState.cameraPath : null,
+          sections: editorState.sections,
+          keyframes: getRenderKeyframes(),
+          pipSize: editorState.pipSize,
+          outputFolder: saveFolder,
+          projectName: activeProject?.name || 'Untitled'
+        });
+        editorExportPremiereBtn.textContent = 'Exported!';
+        console.log('Premiere XML exported:', xmlPath);
+        setTimeout(() => {
+          editorExportPremiereBtn.textContent = 'Export to Premiere';
+          editorExportPremiereBtn.disabled = false;
+        }, 2000);
+      } catch (err) {
+        console.error('Premiere export error:', err);
+        editorExportPremiereBtn.textContent = 'Export Failed';
+        setTimeout(() => {
+          editorExportPremiereBtn.textContent = 'Export to Premiere';
+          editorExportPremiereBtn.disabled = false;
+        }, 2000);
+      }
+    });
 
     // ===== Segment selection =====
 

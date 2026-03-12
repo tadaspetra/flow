@@ -15,5 +15,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   concatVideos: (opts) => ipcRenderer.invoke('concat-videos', opts),
   renderComposite: (opts) => ipcRenderer.invoke('render-composite', opts),
   getScribeToken: () => ipcRenderer.invoke('get-scribe-token'),
-  trimSilence: (opts) => ipcRenderer.invoke('trim-silence', opts)
+  trimSilence: (opts) => ipcRenderer.invoke('trim-silence', opts),
+  exportPremiere: (opts) => ipcRenderer.invoke('export-premiere', opts)
 })

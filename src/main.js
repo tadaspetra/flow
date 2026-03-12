@@ -750,6 +750,272 @@ ipcMain.handle('trim-silence', async (event, opts) => {
   return results
 })
 
+ipcMain.handle('export-premiere', async (event, opts) => {
+  const { screenPath, cameraPath, sections, keyframes, pipSize, outputFolder, projectName } = opts
+  const ffmpegPath = require('ffmpeg-static')
+
+  const safeName = (projectName || 'Untitled').replace(/[<>&"']/g, '')
+
+  // Convert webm to mp4 for Premiere Pro compatibility
+  function transcodeToMp4(inputPath, suffix) {
+    const outPath = path.join(outputFolder, `${safeName.replace(/\s+/g, '-')}-premiere-${suffix}.mp4`)
+    return new Promise((resolve, reject) => {
+      execFile(ffmpegPath, [
+        '-i', inputPath,
+        '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
+        '-c:a', 'aac', '-b:a', '192k',
+        '-y', outPath
+      ], { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) {
+          console.error('FFmpeg transcode stderr:', stderr)
+          reject(stderr || error.message)
+        } else {
+          resolve(outPath)
+        }
+      })
+    })
+  }
+
+  // Transcode screen and camera in parallel
+  // Camera: crop to square center, scale to PiP size, add rounded corners with alpha
+  function transcodeCameraToMov(inputPath) {
+    const outPath = path.join(outputFolder, `${safeName.replace(/\s+/g, '-')}-premiere-camera.mov`)
+    const actualPipSize = pipSize || 480
+    const r = 12
+    const maxCoord = actualPipSize - 1 - r
+    const rSq = r * r
+    const roundCorner = `lte(pow(max(0\\,max(${r}-X\\,X-${maxCoord}))\\,2)+pow(max(0\\,max(${r}-Y\\,Y-${maxCoord}))\\,2)\\,${rSq})`
+    const filter = `crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2',scale=${actualPipSize}:${actualPipSize},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*${roundCorner}'`
+    return new Promise((resolve, reject) => {
+      execFile(ffmpegPath, [
+        '-i', inputPath,
+        '-vf', filter,
+        '-c:v', 'prores_ks', '-profile:v', '4', '-pix_fmt', 'yuva444p10le',
+        '-an',
+        '-y', outPath
+      ], { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) {
+          console.error('FFmpeg camera transcode stderr:', stderr)
+          reject(stderr || error.message)
+        } else {
+          resolve(outPath)
+        }
+      })
+    })
+  }
+
+  const transcodePromises = [transcodeToMp4(screenPath, 'screen')]
+  if (cameraPath) transcodePromises.push(transcodeCameraToMov(cameraPath))
+  const [mp4Path, cameraMp4Path] = await Promise.all(transcodePromises)
+
+  // Probe the mp4 for frame rate and resolution
+  const probeInfo = await new Promise((resolve) => {
+    execFile(ffmpegPath, ['-i', mp4Path], { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      const output = stderr || ''
+      const fpsMatch = output.match(/(\d+(?:\.\d+)?)\s*fps/)
+      const resMatch = output.match(/(\d{2,5})x(\d{2,5})/)
+      resolve({
+        fps: fpsMatch ? Math.round(parseFloat(fpsMatch[1])) || 30 : 30,
+        width: resMatch ? parseInt(resMatch[1], 10) : 1920,
+        height: resMatch ? parseInt(resMatch[2], 10) : 1080
+      })
+    })
+  })
+
+  const timebase = probeInfo.fps
+  const vidWidth = probeInfo.width
+  const vidHeight = probeInfo.height
+  const isNtsc = [24, 30, 60].includes(timebase)
+  const ntscStr = isNtsc ? 'TRUE' : 'FALSE'
+  const safeSections = Array.isArray(sections) ? sections : []
+  const totalDuration = safeSections.length > 0
+    ? safeSections[safeSections.length - 1].end
+    : 0
+  const totalFrames = Math.round(totalDuration * timebase)
+  const fileUrl = `file:///${encodeURI(mp4Path).replace(/%2F/g, '/').replace(/^\//, '')}`
+
+  const rateXml = `<rate><timebase>${timebase}</timebase><ntsc>${ntscStr}</ntsc></rate>`
+
+  // Full file definition (embedded in first clip, referenced by id in subsequent clips)
+  const fileDefXml = `<file id="file-1">
+                  <name>${safeName}</name>
+                  <pathurl>${fileUrl}</pathurl>
+                  <duration>${totalFrames}</duration>
+                  ${rateXml}
+                  <media>
+                    <video>
+                      <samplecharacteristics>
+                        ${rateXml}
+                        <width>${vidWidth}</width>
+                        <height>${vidHeight}</height>
+                        <anamorphic>FALSE</anamorphic>
+                        <pixelaspectratio>square</pixelaspectratio>
+                        <fielddominance>none</fielddominance>
+                      </samplecharacteristics>
+                    </video>
+                    <audio>
+                      <samplecharacteristics>
+                        <samplerate>48000</samplerate>
+                        <depth>16</depth>
+                      </samplecharacteristics>
+                      <channelcount>2</channelcount>
+                    </audio>
+                  </media>
+                </file>`
+
+  // Build video clip items — first clip gets full file def, rest reference by id
+  const clipItems = safeSections.map((section, i) => {
+    const inFrame = Math.round(section.start * timebase)
+    const outFrame = Math.round(section.end * timebase)
+    const clipDuration = outFrame - inFrame
+    let trackStart = 0
+    for (let j = 0; j < i; j++) {
+      trackStart += Math.round((safeSections[j].end - safeSections[j].start) * timebase)
+    }
+    const trackEnd = trackStart + clipDuration
+    const fileRef = i === 0 ? fileDefXml : '<file id="file-1"/>'
+
+    return `              <clipitem id="clipitem-v-${i + 1}">
+                <masterclipid>masterclip-1</masterclipid>
+                <name>${safeName} - Section ${i + 1}</name>
+                <duration>${totalFrames}</duration>
+                ${rateXml}
+                <in>${inFrame}</in>
+                <out>${outFrame}</out>
+                <start>${trackStart}</start>
+                <end>${trackEnd}</end>
+                ${fileRef}
+              </clipitem>`
+  }).join('\n')
+
+  // Build camera video clip items (V2 track) if camera exists
+  let cameraTrackXml = ''
+  if (cameraMp4Path) {
+    const camFileUrl = `file:///${encodeURI(cameraMp4Path).replace(/%2F/g, '/').replace(/^\//, '')}`
+    const actualPipSize = pipSize || 480
+    const camFileDefXml = `<file id="file-2">
+                  <name>${safeName} Camera</name>
+                  <pathurl>${camFileUrl}</pathurl>
+                  <duration>${totalFrames}</duration>
+                  ${rateXml}
+                  <media>
+                    <video>
+                      <samplecharacteristics>
+                        ${rateXml}
+                        <width>${actualPipSize}</width>
+                        <height>${actualPipSize}</height>
+                        <anamorphic>FALSE</anamorphic>
+                        <pixelaspectratio>square</pixelaspectratio>
+                        <fielddominance>none</fielddominance>
+                      </samplecharacteristics>
+                    </video>
+                  </media>
+                </file>`
+
+    const camClipItems = safeSections.map((section, i) => {
+      const inFrame = Math.round(section.start * timebase)
+      const outFrame = Math.round(section.end * timebase)
+      const clipDuration = outFrame - inFrame
+      let trackStart = 0
+      for (let j = 0; j < i; j++) {
+        trackStart += Math.round((safeSections[j].end - safeSections[j].start) * timebase)
+      }
+      const trackEnd = trackStart + clipDuration
+      const fileRef = i === 0 ? camFileDefXml : '<file id="file-2"/>'
+
+      return `              <clipitem id="clipitem-cam-${i + 1}">
+                <masterclipid>masterclip-2</masterclipid>
+                <name>${safeName} Camera - Section ${i + 1}</name>
+                <duration>${totalFrames}</duration>
+                ${rateXml}
+                <in>${inFrame}</in>
+                <out>${outFrame}</out>
+                <start>${trackStart}</start>
+                <end>${trackEnd}</end>
+                ${fileRef}
+              </clipitem>`
+    }).join('\n')
+
+    cameraTrackXml = `
+        <track>
+${camClipItems}
+        </track>`
+  }
+
+  // Build audio clip items
+  const audioClipItems = safeSections.map((section, i) => {
+    const inFrame = Math.round(section.start * timebase)
+    const outFrame = Math.round(section.end * timebase)
+    const clipDuration = outFrame - inFrame
+    let trackStart = 0
+    for (let j = 0; j < i; j++) {
+      trackStart += Math.round((safeSections[j].end - safeSections[j].start) * timebase)
+    }
+    const trackEnd = trackStart + clipDuration
+
+    return `              <clipitem id="clipitem-a-${i + 1}">
+                <masterclipid>masterclip-1</masterclipid>
+                <name>${safeName} - Section ${i + 1}</name>
+                <duration>${totalFrames}</duration>
+                ${rateXml}
+                <in>${inFrame}</in>
+                <out>${outFrame}</out>
+                <start>${trackStart}</start>
+                <end>${trackEnd}</end>
+                <file id="file-1"/>
+                <sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
+              </clipitem>`
+  }).join('\n')
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="5">
+  <sequence>
+    <name>${safeName} Timeline</name>
+    <duration>${totalFrames}</duration>
+    ${rateXml}
+    <timecode>
+      <string>00:00:00:00</string>
+      <frame>0</frame>
+      ${rateXml}
+      <displayformat>NDF</displayformat>
+    </timecode>
+    <media>
+      <video>
+        <format>
+          <samplecharacteristics>
+            ${rateXml}
+            <width>${vidWidth}</width>
+            <height>${vidHeight}</height>
+            <anamorphic>FALSE</anamorphic>
+            <pixelaspectratio>square</pixelaspectratio>
+            <fielddominance>none</fielddominance>
+          </samplecharacteristics>
+        </format>
+        <track>
+${clipItems}
+        </track>${cameraTrackXml}
+      </video>
+      <audio>
+        <format>
+          <samplecharacteristics>
+            <samplerate>48000</samplerate>
+            <depth>16</depth>
+          </samplecharacteristics>
+        </format>
+        <track>
+${audioClipItems}
+        </track>
+      </audio>
+    </media>
+  </sequence>
+</xmeml>`
+
+  const outputPath = path.join(outputFolder, `${safeName.replace(/\s+/g, '-')}-premiere.xml`)
+  fs.writeFileSync(outputPath, xml, 'utf8')
+  return outputPath
+})
+
 app.whenReady().then(createWindow)
 
 app.on('window-all-closed', () => {
