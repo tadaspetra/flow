@@ -3,7 +3,7 @@ require('electron-reload')(__dirname)
 const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { execFile, spawn } = require('child_process')
+const { execFile } = require('child_process')
 
 let win = null
 const PROJECT_FILE_NAME = 'project.json'
@@ -90,6 +90,7 @@ function normalizeSections(rawSections = []) {
         duration: Number.isFinite(Number(section.duration)) ? Number(section.duration) : Math.max(0, (Number.isFinite(end) ? end : 0) - (Number.isFinite(start) ? start : 0)),
         sourceStart: Number.isFinite(sourceStart) ? sourceStart : 0,
         sourceEnd: Number.isFinite(sourceEnd) ? sourceEnd : 0,
+        takeId: typeof section.takeId === 'string' && section.takeId ? section.takeId : null,
         transcript
       }
     })
@@ -129,8 +130,6 @@ function createDefaultProject(name = 'Untitled Project') {
       sections: [],
       keyframes: [],
       selectedSectionId: null,
-      screenPath: null,
-      cameraPath: null,
       hasCamera: false,
       sourceWidth: null,
       sourceHeight: null
@@ -168,8 +167,6 @@ function normalizeProjectData(rawProject, projectFolder) {
       sections: normalizeSections(rawTimeline.sections),
       keyframes: normalizeKeyframes(rawTimeline.keyframes),
       selectedSectionId: typeof rawTimeline.selectedSectionId === 'string' ? rawTimeline.selectedSectionId : null,
-      screenPath: projectFolder ? toProjectAbsolutePath(projectFolder, rawTimeline.screenPath) : (rawTimeline.screenPath || null),
-      cameraPath: projectFolder ? toProjectAbsolutePath(projectFolder, rawTimeline.cameraPath) : (rawTimeline.cameraPath || null),
       hasCamera: !!rawTimeline.hasCamera,
       sourceWidth: Number.isFinite(Number(rawTimeline.sourceWidth)) ? Number(rawTimeline.sourceWidth) : null,
       sourceHeight: Number.isFinite(Number(rawTimeline.sourceHeight)) ? Number(rawTimeline.sourceHeight) : null
@@ -255,11 +252,6 @@ function clearRecoveryTake(projectFolder) {
 }
 
 function completeRecoveryTake(projectFolder) {
-  const recoveryTake = readRecoveryTake(projectFolder)
-  if (recoveryTake && Array.isArray(recoveryTake.trimSegments) && recoveryTake.trimSegments.length > 0) {
-    safeUnlink(recoveryTake.screenPath)
-    safeUnlink(recoveryTake.cameraPath)
-  }
   clearRecoveryTake(projectFolder)
 }
 
@@ -302,9 +294,6 @@ function saveProjectToDisk(projectFolder, rawProject) {
     screenPath: toProjectRelativePath(projectFolder, take.screenPath),
     cameraPath: toProjectRelativePath(projectFolder, take.cameraPath)
   }))
-  serializable.timeline.screenPath = toProjectRelativePath(projectFolder, serializable.timeline.screenPath)
-  serializable.timeline.cameraPath = toProjectRelativePath(projectFolder, serializable.timeline.cameraPath)
-
   writeJsonFile(getProjectFilePath(projectFolder), serializable)
   return normalized
 }
@@ -552,88 +541,96 @@ ipcMain.handle('save-video', async (event, buffer, folder, suffix) => {
   return filePath
 })
 
-ipcMain.handle('concat-videos', async (event, opts = {}) => {
-  const inputPaths = Array.isArray(opts.inputPaths) ? opts.inputPaths.filter(Boolean) : []
-  if (inputPaths.length === 0) return { outputPath: null }
-  if (inputPaths.length === 1) return { outputPath: inputPaths[0] }
-
-  const outputFolder = typeof opts.outputFolder === 'string' && opts.outputFolder
-    ? opts.outputFolder
-    : path.dirname(inputPaths[0])
-  ensureDirectory(outputFolder)
-
-  const ffmpegPath = require('ffmpeg-static')
-  const suffix = typeof opts.suffix === 'string' && opts.suffix ? opts.suffix : 'concat'
-  const ext = path.extname(inputPaths[0]) || '.webm'
-  const outputPath = path.join(outputFolder, `recording-${Date.now()}-${suffix}${ext}`)
-  const listFilePath = path.join(outputFolder, `.concat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`)
-
-  const escapedList = inputPaths
-    .map((filePath) => `file '${String(filePath).replace(/'/g, "'\\''")}'`)
-    .join('\n')
-  fs.writeFileSync(listFilePath, escapedList, 'utf8')
-
-  function runFfmpeg(args) {
-    return new Promise((resolve, reject) => {
-      execFile(ffmpegPath, args, { maxBuffer: 20 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (error) reject(stderr || error.message)
-        else resolve()
-      })
-    })
-  }
-
-  const copyArgs = [
-    '-f', 'concat',
-    '-safe', '0',
-    '-i', listFilePath,
-    '-c', 'copy',
-    '-y', outputPath
-  ]
-
-  const reencodeArgs = [
-    '-f', 'concat',
-    '-safe', '0',
-    '-i', listFilePath,
-    '-c:v', 'libvpx-vp9',
-    '-crf', '30',
-    '-b:v', '0',
-    '-c:a', 'libopus',
-    '-y', outputPath
-  ]
-
-  try {
-    await runFfmpeg(copyArgs)
-  } catch (copyErr) {
-    console.warn('Concat with stream copy failed, retrying with re-encode:', copyErr)
-    await runFfmpeg(reencodeArgs)
-  } finally {
-    try {
-      fs.unlinkSync(listFilePath)
-    } catch (cleanupError) {
-      console.warn('Failed to clean concat temp list:', cleanupError)
-    }
-  }
-
-  return { outputPath }
-})
-
 ipcMain.handle('render-composite', async (event, opts) => {
-  const { screenPath, cameraPath, keyframes, pipSize, screenFitMode, sourceWidth, sourceHeight, outputFolder } = opts
+  const { takes, sections, keyframes, pipSize, screenFitMode, sourceWidth, sourceHeight, outputFolder } = opts
   const ffmpegPath = require('ffmpeg-static')
   const outputPath = path.join(outputFolder, `recording-${Date.now()}-edited.mp4`)
 
-  // Canvas coordinates are 1920x1080; scale to source video resolution
+  if (!Array.isArray(sections) || sections.length === 0) {
+    throw new Error('No sections to render')
+  }
+
   const canvasW = 1920
   const canvasH = 1080
 
-  let args = ['-i', screenPath]
+  const takeMap = new Map()
+  for (const take of (Array.isArray(takes) ? takes : [])) {
+    takeMap.set(take.id, { screenPath: take.screenPath, cameraPath: take.cameraPath })
+  }
 
-  if (cameraPath && keyframes && keyframes.some(kf => kf.pipVisible || kf.cameraFullscreen)) {
-    args.push('-i', cameraPath)
-    const filterComplex = buildFilterComplex(keyframes, pipSize, screenFitMode, sourceWidth, sourceHeight, canvasW, canvasH)
-    args.push('-filter_complex', filterComplex, '-map', '[out]', '-map', '0:a?')
+  const hasCamera = keyframes && keyframes.some(kf => kf.pipVisible || kf.cameraFullscreen)
+
+  // Each section gets its own pair of inputs (screen + optional camera)
+  let args = []
+  const sectionInputs = []
+  let inputIdx = 0
+
+  for (const section of sections) {
+    const take = takeMap.get(section.takeId)
+    if (!take) throw new Error(`Take ${section.takeId} not found`)
+    args.push('-i', take.screenPath)
+    const screenIdx = inputIdx++
+    let cameraIdx = -1
+    if (hasCamera && take.cameraPath) {
+      args.push('-i', take.cameraPath)
+      cameraIdx = inputIdx++
+    }
+    sectionInputs.push({ screenIdx, cameraIdx })
+  }
+
+  // Build filter complex
+  const filterParts = []
+
+  // Phase 1: Trim sections from source files
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i]
+    const { screenIdx } = sectionInputs[i]
+    const ss = section.sourceStart.toFixed(3)
+    const se = section.sourceEnd.toFixed(3)
+    filterParts.push(`[${screenIdx}:v]trim=start=${ss}:end=${se},setpts=PTS-STARTPTS[sv${i}]`)
+    filterParts.push(`[${screenIdx}:a]atrim=start=${ss}:end=${se},asetpts=PTS-STARTPTS[sa${i}]`)
+  }
+
+  // Concat screen + audio segments
+  const screenLabels = sections.map((_, i) => `[sv${i}][sa${i}]`).join('')
+  filterParts.push(`${screenLabels}concat=n=${sections.length}:v=1:a=1[screen_raw][audio_out]`)
+
+  if (hasCamera) {
+    // Phase 1b: Trim and concat camera segments
+    for (let i = 0; i < sections.length; i++) {
+      const section = sections[i]
+      const { cameraIdx } = sectionInputs[i]
+      const ss = section.sourceStart.toFixed(3)
+      const se = section.sourceEnd.toFixed(3)
+      const dur = (section.sourceEnd - section.sourceStart).toFixed(3)
+      if (cameraIdx >= 0) {
+        filterParts.push(`[${cameraIdx}:v]trim=start=${ss}:end=${se},setpts=PTS-STARTPTS[cv${i}]`)
+      } else {
+        filterParts.push(`color=black:s=1920x1080:d=${dur}[cv${i}]`)
+      }
+    }
+    const cameraLabels = sections.map((_, i) => `[cv${i}]`).join('')
+    filterParts.push(`${cameraLabels}concat=n=${sections.length}:v=1:a=0[camera_raw]`)
+
+    // Phase 2: Apply PiP/keyframe overlay on assembled streams
+    const overlayFilter = buildFilterComplex(keyframes, pipSize, screenFitMode, sourceWidth, sourceHeight, canvasW, canvasH)
+    const adapted = overlayFilter.replace(/\[0:v\]/g, '[screen_raw]').replace(/\[1:v\]/g, '[camera_raw]')
+    filterParts.push(adapted)
+
+    args.push('-filter_complex', filterParts.join(';'), '-map', '[out]', '-map', '[audio_out]')
   } else {
-    args.push('-map', '0:v', '-map', '0:a?')
+    // No camera - just scale assembled screen
+    let outW = sourceWidth % 2 === 0 ? sourceWidth : sourceWidth - 1
+    let outH = Math.round(outW * 9 / 16)
+    if (outH % 2 !== 0) outH--
+
+    if (screenFitMode === 'fill') {
+      filterParts.push(`[screen_raw]scale=${outW}:${outH}:force_original_aspect_ratio=increase,crop=${outW}:${outH}[out]`)
+    } else {
+      filterParts.push(`[screen_raw]scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:'(ow-iw)/2':'(oh-ih)/2':color=black[out]`)
+    }
+
+    args.push('-filter_complex', filterParts.join(';'), '-map', '[out]', '-map', '[audio_out]')
   }
 
   args.push(
@@ -809,108 +806,27 @@ ipcMain.handle('get-scribe-token', async () => {
   }
 })
 
-// ===== Trim Silence =====
+// ===== Compute Sections (non-destructive silence detection) =====
 
-ipcMain.handle('trim-silence', async (event, opts) => {
-  const { screenPath, cameraPath, segments, outputFolder } = opts
-  const ffmpegPath = require('ffmpeg-static')
+ipcMain.handle('compute-sections', async (event, opts) => {
+  const { segments } = opts
   const paddingSeconds = Number.isFinite(Number(opts?.paddingSeconds))
     ? Math.max(0, Number(opts.paddingSeconds))
     : 0.15
-  const cleanupInput = !!opts?.cleanupInput
-  const trimTargets = [
-    screenPath ? { key: 'screenPath', inputPath: screenPath, label: 'screen recording' } : null,
-    cameraPath ? { key: 'cameraPath', inputPath: cameraPath, label: 'camera recording' } : null
-  ].filter(Boolean)
 
-  function getFileSizeBytes(filePath) {
-    try {
-      return fs.statSync(filePath).size
-    } catch (error) {
-      return 0
-    }
-  }
-
-  function getAvailableDiskBytes(folderPath) {
-    try {
-      if (typeof fs.statfsSync !== 'function') return null
-      const stats = fs.statfsSync(folderPath)
-      const blockSize = Number(stats?.bsize)
-      const availableBlocks = Number(stats?.bavail)
-      if (!Number.isFinite(blockSize) || !Number.isFinite(availableBlocks)) return null
-      return blockSize * availableBlocks
-    } catch (error) {
-      return null
-    }
-  }
-
-  function sendTrimProgress(payload) {
-    try {
-      event.sender.send('trim-silence-progress', payload)
-    } catch (error) {
-      console.warn('Failed to send trim progress event:', error)
-    }
-  }
-
-  function clamp01(value) {
-    if (!Number.isFinite(value)) return 0
-    return Math.max(0, Math.min(1, value))
-  }
-
-  function formatPercent(value) {
-    return `${Math.round(clamp01(value) * 100)}%`
-  }
-
-  function formatTrimStatus(fileIndex, fileCount, label, fileProgress) {
-    if (fileCount <= 1) return `Trimming ${label} (${formatPercent(fileProgress)})`
-    return `Trimming ${label} (${fileIndex}/${fileCount}, ${formatPercent(fileProgress)})`
-  }
-
-  function emitOverallTrimProgress(fileIndex, fileProgress, label) {
-    const safeFileCount = Math.max(1, trimTargets.length)
-    const normalizedFileIndex = Math.min(safeFileCount, Math.max(1, fileIndex))
-    const safeFileProgress = clamp01(fileProgress)
-    const overallProgress = ((normalizedFileIndex - 1) + safeFileProgress) / safeFileCount
-    sendTrimProgress({
-      title: 'Trimming silence...',
-      status: formatTrimStatus(normalizedFileIndex, safeFileCount, label, safeFileProgress),
-      progress: overallProgress,
-      fileIndex: normalizedFileIndex,
-      fileCount: safeFileCount,
-      fileProgress: safeFileProgress,
-      label
-    })
-  }
-
-  function parseFfmpegTimeToSeconds(value) {
-    if (typeof value !== 'string' || !value.trim()) return null
-    const parts = value.trim().split(':')
-    if (parts.length !== 3) return null
-    const [hours, minutes, seconds] = parts.map(Number)
-    if (![hours, minutes, seconds].every(Number.isFinite)) return null
-    return (hours * 3600) + (minutes * 60) + seconds
+  const safeSegments = Array.isArray(segments) ? segments : []
+  if (safeSegments.length === 0) {
+    return { sections: [], trimmedDuration: 0 }
   }
 
   // Add padding and merge overlapping segments
-  const safeSegments = Array.isArray(segments) ? segments : []
-  if (safeSegments.length === 0) {
-    return {
-      sections: [],
-      trimmedDuration: 0,
-      screenPath: null,
-      cameraPath: null
-    }
-  }
-
   let padded = safeSegments.map(s => ({
     start: Math.max(0, s.start - paddingSeconds),
     end: s.end + paddingSeconds
   }))
 
-  // Sort by start time
   padded.sort((a, b) => a.start - b.start)
 
-  // Merge overlapping/adjacent segments
   const merged = [padded[0]]
   for (let i = 1; i < padded.length; i++) {
     const last = merged[merged.length - 1]
@@ -921,201 +837,34 @@ ipcMain.handle('trim-silence', async (event, opts) => {
     }
   }
 
-  const availableDiskBytes = getAvailableDiskBytes(outputFolder || path.dirname(screenPath || cameraPath || app.getPath('documents')))
-  if (availableDiskBytes !== null && trimTargets.length > 0) {
-    const largestInputBytes = trimTargets.reduce((maxBytes, target) => {
-      return Math.max(maxBytes, getFileSizeBytes(target.inputPath))
-    }, 0)
-    const safetyBufferBytes = 256 * 1024 * 1024
-    const requiredBytes = largestInputBytes + safetyBufferBytes
-    if (availableDiskBytes < requiredBytes) {
-      throw new Error('Not enough free disk space to trim safely. The recording was kept so it can be recovered.')
-    }
-  }
+  // Build remapped sections
+  const remapped = []
+  let timelineCursor = 0
+  for (let i = 0; i < merged.length; i++) {
+    const seg = merged[i]
+    const sourceStart = Number(seg.start.toFixed(3))
+    const sourceEnd = Number(seg.end.toFixed(3))
+    const sectionDuration = Math.max(0, sourceEnd - sourceStart)
+    const start = Number(timelineCursor.toFixed(3))
+    const end = Number((timelineCursor + sectionDuration).toFixed(3))
 
-  function buildRemappedSections(segmentsToMap) {
-    const remapped = []
-    let timelineCursor = 0
-
-    for (let i = 0; i < segmentsToMap.length; i++) {
-      const seg = segmentsToMap[i]
-      const sourceStart = Number(seg.start.toFixed(3))
-      const sourceEnd = Number(seg.end.toFixed(3))
-      const sectionDuration = Math.max(0, sourceEnd - sourceStart)
-      const start = Number(timelineCursor.toFixed(3))
-      const end = Number((timelineCursor + sectionDuration).toFixed(3))
-
-      remapped.push({
-        id: `section-${i + 1}`,
-        index: i,
-        sourceStart,
-        sourceEnd,
-        start,
-        end,
-        duration: Number(sectionDuration.toFixed(3))
-      })
-
-      timelineCursor += sectionDuration
-    }
-
-    return remapped
-  }
-
-  function buildTrimFilter(merged) {
-    const parts = []
-    const labels = []
-
-    for (let i = 0; i < merged.length; i++) {
-      const s = merged[i].start.toFixed(3)
-      const e = merged[i].end.toFixed(3)
-      parts.push(`[0:v]trim=start=${s}:end=${e},setpts=PTS-STARTPTS[v${i}]`)
-      parts.push(`[0:a]atrim=start=${s}:end=${e},asetpts=PTS-STARTPTS[a${i}]`)
-      labels.push(`[v${i}][a${i}]`)
-    }
-
-    parts.push(`${labels.join('')}concat=n=${merged.length}:v=1:a=1[outv][outa]`)
-    return parts.join(';')
-  }
-
-  function trimFile(inputPath, fileIndex, fileCount, label, targetDuration) {
-    const ext = path.extname(inputPath)
-    const base = path.basename(inputPath, ext)
-    const preferredOutputPath = cleanupInput
-      ? inputPath
-      : path.join(outputFolder, `${base}-trimmed${ext}`)
-    const outputPath = path.resolve(preferredOutputPath) === path.resolve(inputPath)
-      ? path.join(outputFolder, `.${base}-trim-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`)
-      : preferredOutputPath
-    const filter = buildTrimFilter(merged)
-
-    const args = [
-      '-i', inputPath,
-      '-filter_complex', filter,
-      '-map', '[outv]', '-map', '[outa]',
-      '-progress', 'pipe:1',
-      '-nostats',
-      '-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0',
-      '-c:a', 'libopus',
-      '-y', outputPath
-    ]
-
-    return new Promise((resolve, reject) => {
-      const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true })
-      let stdoutBuffer = ''
-      let stderrBuffer = ''
-      let lastReportedProgress = -1
-      let finalizing = false
-
-      emitOverallTrimProgress(fileIndex, 0, label)
-
-      function maybeReportProgress(progressValue) {
-        const safeProgress = clamp01(progressValue)
-        if (Math.abs(safeProgress - lastReportedProgress) < 0.01 && safeProgress < 1) return
-        lastReportedProgress = safeProgress
-        emitOverallTrimProgress(fileIndex, safeProgress, label)
-      }
-
-      function finalizeSuccess() {
-        if (finalizing) return
-        finalizing = true
-        maybeReportProgress(1)
-
-        try {
-          if (cleanupInput) {
-            safeUnlink(inputPath)
-            fs.renameSync(outputPath, inputPath)
-            resolve(inputPath)
-            return
-          }
-
-          resolve(outputPath)
-        } catch (finalizeError) {
-          safeUnlink(outputPath)
-          reject(finalizeError)
-        }
-      }
-
-      ffmpeg.stdout.on('data', (chunk) => {
-        stdoutBuffer += String(chunk)
-        const lines = stdoutBuffer.split(/\r?\n/)
-        stdoutBuffer = lines.pop() || ''
-
-        for (const line of lines) {
-          const trimmedLine = line.trim()
-          if (!trimmedLine) continue
-
-          const separatorIndex = trimmedLine.indexOf('=')
-          if (separatorIndex <= 0) continue
-
-          const key = trimmedLine.slice(0, separatorIndex)
-          const value = trimmedLine.slice(separatorIndex + 1)
-
-          if (key === 'out_time') {
-            const seconds = parseFfmpegTimeToSeconds(value)
-            if (seconds !== null && targetDuration > 0) {
-              maybeReportProgress(seconds / targetDuration)
-            }
-          } else if ((key === 'out_time_ms' || key === 'out_time_us') && targetDuration > 0) {
-            const rawValue = Number(value)
-            if (Number.isFinite(rawValue)) {
-              maybeReportProgress((rawValue / 1000000) / targetDuration)
-            }
-          } else if (key === 'progress' && value === 'end') {
-            maybeReportProgress(1)
-          }
-        }
-      })
-
-      ffmpeg.stderr.on('data', (chunk) => {
-        stderrBuffer += String(chunk)
-      })
-
-      ffmpeg.on('error', (error) => {
-        if (finalizing) return
-        finalizing = true
-        safeUnlink(outputPath)
-        reject(error)
-      })
-
-      ffmpeg.on('close', (code) => {
-        if (code !== 0) {
-          if (finalizing) return
-          finalizing = true
-          safeUnlink(outputPath)
-          console.error('FFmpeg trim stderr:', stderrBuffer)
-          reject(stderrBuffer || `ffmpeg exited with code ${code}`)
-          return
-        }
-
-        finalizeSuccess()
-      })
+    remapped.push({
+      id: `section-${i + 1}`,
+      index: i,
+      sourceStart,
+      sourceEnd,
+      start,
+      end,
+      duration: Number(sectionDuration.toFixed(3))
     })
+
+    timelineCursor += sectionDuration
   }
 
-  const results = {}
-  const remappedSections = buildRemappedSections(merged)
-  results.sections = remappedSections
-  results.trimmedDuration = remappedSections.length > 0
-    ? remappedSections[remappedSections.length - 1].end
-    : 0
-
-  for (let i = 0; i < trimTargets.length; i++) {
-    const target = trimTargets[i]
-    results[target.key] = await trimFile(
-      target.inputPath,
-      i + 1,
-      trimTargets.length,
-      target.label,
-      results.trimmedDuration
-    )
+  return {
+    sections: remapped,
+    trimmedDuration: remapped.length > 0 ? remapped[remapped.length - 1].end : 0
   }
-
-  sendTrimProgress({
-    title: 'Trimming silence...',
-    status: 'Finalizing trimmed clips...',
-    progress: 1
-  })
-  return results
 })
 
 app.whenReady().then(createWindow)

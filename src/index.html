@@ -184,10 +184,6 @@
       <canvas id="editorCanvas" class="w-full h-full object-contain" style="aspect-ratio: 16/9;"></canvas>
     </div>
 
-    <!-- Hidden video elements for editor playback -->
-    <video id="editorScreenVideo" playsinline class="hidden"></video>
-    <video id="editorCameraVideo" muted playsinline class="hidden"></video>
-
     <!-- Playback controls -->
     <div class="flex items-center justify-center gap-2">
       <button id="editorPlayBtn" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Play</button>
@@ -265,8 +261,6 @@
     const editorView = document.getElementById('editorView');
     const editorCanvas = document.getElementById('editorCanvas');
     const editorCtx = editorCanvas.getContext('2d');
-    const editorScreenVideo = document.getElementById('editorScreenVideo');
-    const editorCameraVideo = document.getElementById('editorCameraVideo');
     const editorBackBtn = document.getElementById('editorBackBtn');
     const editorPlayBtn = document.getElementById('editorPlayBtn');
     const editorToggleCamBtn = document.getElementById('editorToggleCamBtn');
@@ -340,6 +334,64 @@
     let draggingPip = false;
     let waveformPeaks = null;
     let trimDragState = null;
+    let takeVideoPool = new Map(); // takeId -> { screen: HTMLVideoElement, camera: HTMLVideoElement|null }
+    let activeTakeId = null;
+    let activePlaybackSection = null;
+
+    function getOrCreateTakeVideos(takeId) {
+      if (takeVideoPool.has(takeId)) return takeVideoPool.get(takeId);
+      const take = activeProject?.takes?.find(t => t.id === takeId);
+      if (!take) return null;
+      const screen = document.createElement('video');
+      screen.playsInline = true;
+      screen.preload = 'auto';
+      screen.src = pathToFileUrl(take.screenPath);
+      let camera = null;
+      if (take.cameraPath) {
+        camera = document.createElement('video');
+        camera.playsInline = true;
+        camera.muted = true;
+        camera.preload = 'auto';
+        camera.src = pathToFileUrl(take.cameraPath);
+      }
+      const entry = { screen, camera };
+      takeVideoPool.set(takeId, entry);
+      return entry;
+    }
+
+    function cleanupVideoPool() {
+      for (const [, videos] of takeVideoPool) {
+        videos.screen.pause();
+        videos.screen.src = '';
+        if (videos.camera) {
+          videos.camera.pause();
+          videos.camera.src = '';
+        }
+      }
+      takeVideoPool.clear();
+      activeTakeId = null;
+      activePlaybackSection = null;
+    }
+
+    function resolveTimeToSource(timelineTime) {
+      const section = findSectionForTime(timelineTime);
+      if (!section) return null;
+      const sourceTime = section.sourceStart + (timelineTime - section.start);
+      return { takeId: section.takeId, sourceTime, section };
+    }
+
+    function recalculateTimelinePositions() {
+      if (!editorState || !editorState.sections) return;
+      let cursor = 0;
+      for (const section of editorState.sections) {
+        const duration = section.sourceEnd - section.sourceStart;
+        section.start = roundMs(cursor);
+        section.end = roundMs(cursor + duration);
+        section.duration = roundMs(duration);
+        cursor += duration;
+      }
+      editorState.duration = cursor;
+    }
 
     function easeInOut(t) {
       return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
@@ -429,8 +481,6 @@
           sections: [],
           keyframes: [],
           selectedSectionId: null,
-          screenPath: null,
-          cameraPath: null,
           hasCamera: false,
           sourceWidth: null,
           sourceHeight: null
@@ -442,8 +492,6 @@
         sections: Array.isArray(editorState.sections) ? editorState.sections.map(section => ({ ...section })) : [],
         keyframes: Array.isArray(editorState.keyframes) ? editorState.keyframes.map(kf => ({ ...kf })) : [],
         selectedSectionId: editorState.selectedSectionId || null,
-        screenPath: editorState.screenPath || null,
-        cameraPath: editorState.cameraPath || null,
         hasCamera: !!editorState.hasCamera,
         sourceWidth: editorState.sourceWidth || null,
         sourceHeight: editorState.sourceHeight || null
@@ -544,16 +592,7 @@
         editorDrawRAF = null;
       }
 
-      editorScreenVideo.onloadedmetadata = null;
-      editorCameraVideo.onloadedmetadata = null;
-
-      if (editorState) {
-        if (editorState.screenBlobUrl && editorState.screenBlobUrl.startsWith('blob:')) URL.revokeObjectURL(editorState.screenBlobUrl);
-        if (editorState.cameraBlobUrl && editorState.cameraBlobUrl.startsWith('blob:')) URL.revokeObjectURL(editorState.cameraBlobUrl);
-      }
-
-      editorScreenVideo.src = '';
-      editorCameraVideo.src = '';
+      cleanupVideoPool();
       editorState = null;
       waveformPeaks = null;
       renderWaveform();
@@ -647,15 +686,11 @@
       hideFromRecording = project.settings?.hideFromRecording === false ? 'false' : 'true';
       await syncContentProtection();
 
-      if (project.timeline && project.timeline.screenPath) {
+      if (project.timeline && Array.isArray(project.timeline.sections) && project.timeline.sections.length > 0) {
         enterEditor(
-          null,
-          null,
-          project.timeline.screenPath,
-          project.timeline.cameraPath || null,
-          project.timeline.duration || 0,
-          project.timeline.sections || [],
+          project.timeline.sections,
           {
+            duration: project.timeline.duration || 0,
             keyframes: project.timeline.keyframes || [],
             selectedSectionId: project.timeline.selectedSectionId || null,
             hasCamera: !!project.timeline.hasCamera,
@@ -791,6 +826,7 @@
             sourceEnd: Number.isFinite(Number(section.sourceEnd)) ? Number(section.sourceEnd) : end,
             start: roundMs(start),
             end: roundMs(end),
+            takeId: typeof section.takeId === 'string' && section.takeId ? section.takeId : null,
             transcript
           };
         })
@@ -986,25 +1022,59 @@
       }
     }
 
-    async function extractWaveformPeaks(videoSrc, numBuckets = 800) {
+    async function extractWaveformPeaks(numBuckets = 800) {
+      if (!editorState || !editorState.sections || editorState.sections.length === 0) return null;
+
       try {
-        const response = await fetch(videoSrc);
-        const arrayBuffer = await response.arrayBuffer();
-        const offlineCtx = new OfflineAudioContext(1, 1, 44100);
-        const audioBuffer = await offlineCtx.decodeAudioData(arrayBuffer);
-        const channelData = audioBuffer.getChannelData(0);
-        const samplesPerBucket = Math.floor(channelData.length / numBuckets);
-        const peaks = new Float32Array(numBuckets);
-        for (let i = 0; i < numBuckets; i++) {
-          let max = 0;
-          const start = i * samplesPerBucket;
-          const end = Math.min(start + samplesPerBucket, channelData.length);
-          for (let j = start; j < end; j++) {
-            const abs = Math.abs(channelData[j]);
-            if (abs > max) max = abs;
+        // Decode audio for each referenced take
+        const takeAudioBuffers = new Map();
+        for (const section of editorState.sections) {
+          if (!section.takeId || takeAudioBuffers.has(section.takeId)) continue;
+          const take = activeProject?.takes?.find(t => t.id === section.takeId);
+          if (!take) continue;
+          try {
+            const url = pathToFileUrl(take.screenPath);
+            const response = await fetch(url);
+            const arrayBuffer = await response.arrayBuffer();
+            const offlineCtx = new OfflineAudioContext(1, 1, 44100);
+            const audioBuffer = await offlineCtx.decodeAudioData(arrayBuffer);
+            takeAudioBuffers.set(section.takeId, audioBuffer);
+          } catch (err) {
+            console.warn(`Failed to decode audio for take ${section.takeId}:`, err);
           }
-          peaks[i] = max;
         }
+
+        const totalDuration = editorState.duration;
+        if (totalDuration <= 0) return null;
+        const peaks = new Float32Array(numBuckets);
+
+        for (let bucket = 0; bucket < numBuckets; bucket++) {
+          const bucketStart = (bucket / numBuckets) * totalDuration;
+          const bucketEnd = ((bucket + 1) / numBuckets) * totalDuration;
+          let maxPeak = 0;
+
+          for (const section of editorState.sections) {
+            if (bucketEnd <= section.start || bucketStart >= section.end) continue;
+            const overlapStart = Math.max(bucketStart, section.start);
+            const overlapEnd = Math.min(bucketEnd, section.end);
+            const sourceStart = section.sourceStart + (overlapStart - section.start);
+            const sourceEnd = section.sourceStart + (overlapEnd - section.start);
+
+            const audioBuffer = takeAudioBuffers.get(section.takeId);
+            if (!audioBuffer) continue;
+            const channelData = audioBuffer.getChannelData(0);
+            const sampleRate = audioBuffer.sampleRate;
+            const startSample = Math.floor(sourceStart * sampleRate);
+            const endSample = Math.min(Math.ceil(sourceEnd * sampleRate), channelData.length);
+
+            for (let j = startSample; j < endSample; j++) {
+              const abs = Math.abs(channelData[j]);
+              if (abs > maxPeak) maxPeak = abs;
+            }
+          }
+          peaks[bucket] = maxPeak;
+        }
+
         return peaks;
       } catch (err) {
         console.warn('Failed to extract waveform:', err);
@@ -1102,11 +1172,14 @@
       if (!section) return;
       editorPause();
       e.preventDefault();
+      const rect = editorTimeline.getBoundingClientRect();
       trimDragState = {
         sectionId,
         edge,
-        originalStart: section.start,
-        originalEnd: section.end
+        originalSourceStart: section.sourceStart,
+        originalSourceEnd: section.sourceEnd,
+        startMouseX: e.clientX,
+        pixelsPerSecond: rect.width / editorState.duration
       };
       document.body.style.cursor = 'col-resize';
       const onMove = (e2) => { e2.preventDefault(); updateTrimDrag(e2); };
@@ -1122,139 +1195,40 @@
 
     function updateTrimDrag(e) {
       if (!trimDragState || !editorState) return;
-      const rect = editorTimeline.getBoundingClientRect();
-      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const time = roundMs(pct * editorState.duration);
       const section = editorState.sections.find(s => s.id === trimDragState.sectionId);
       if (!section) return;
       const MIN_DURATION = 0.1;
+      const deltaPixels = e.clientX - trimDragState.startMouseX;
+      const deltaTime = deltaPixels / trimDragState.pixelsPerSecond;
+
       if (trimDragState.edge === 'left') {
-        section.start = roundMs(Math.max(trimDragState.originalStart, Math.min(trimDragState.originalEnd - MIN_DURATION, time)));
+        section.sourceStart = roundMs(Math.max(0, Math.min(
+          trimDragState.originalSourceEnd - MIN_DURATION,
+          trimDragState.originalSourceStart + deltaTime
+        )));
       } else {
-        section.end = roundMs(Math.max(trimDragState.originalStart + MIN_DURATION, Math.min(trimDragState.originalEnd, time)));
+        section.sourceEnd = roundMs(Math.max(
+          section.sourceStart + MIN_DURATION,
+          trimDragState.originalSourceEnd + deltaTime
+        ));
       }
-      section.duration = roundMs(section.end - section.start);
+
+      recalculateTimelinePositions();
       renderSectionMarkers();
     }
 
-    async function finishTrimDrag() {
+    function finishTrimDrag() {
       if (!trimDragState || !editorState) { trimDragState = null; return; }
       const section = editorState.sections.find(s => s.id === trimDragState.sectionId);
       if (!section) { trimDragState = null; return; }
-      const startChanged = Math.abs(section.start - trimDragState.originalStart) > 0.01;
-      const endChanged = Math.abs(section.end - trimDragState.originalEnd) > 0.01;
-      const dragState = { ...trimDragState };
+      const sourceStartChanged = Math.abs(section.sourceStart - trimDragState.originalSourceStart) > 0.01;
+      const sourceEndChanged = Math.abs(section.sourceEnd - trimDragState.originalSourceEnd) > 0.01;
       trimDragState = null;
-      if (!startChanged && !endChanged) return;
-      await applyEdgeTrim(dragState);
-    }
-
-    async function applyEdgeTrim(dragState) {
-      if (!editorState || editorState.rendering) return;
-      const projectSession = getActiveProjectSession();
-      const previousState = {
-        sections: editorState.sections.map(s => ({ ...s })),
-        keyframes: editorState.keyframes.map(kf => ({ ...kf })),
-        screenPath: editorState.screenPath,
-        cameraPath: editorState.cameraPath,
-        hasCamera: editorState.hasCamera,
-        screenFitMode: editorState.screenFitMode,
-        sourceWidth: editorState.sourceWidth,
-        sourceHeight: editorState.sourceHeight,
-        defaultPipX: editorState.defaultPipX,
-        defaultPipY: editorState.defaultPipY
-      };
-      const sectionAnchors = buildSectionAnchorSnapshot(previousState.keyframes);
-      const trimmedSection = previousState.sections.find(s => s.id === dragState.sectionId);
-      showProcessingState('Trimming clip...', `Adjusting ${trimmedSection?.label || 'section'}`);
-
-      try {
-        const segments = previousState.sections.map(s => ({ start: s.start, end: s.end }));
-        const trimmed = await window.electronAPI.trimSilence({
-          screenPath: previousState.screenPath,
-          cameraPath: previousState.hasCamera ? previousState.cameraPath : null,
-          segments,
-          outputFolder: saveFolder,
-          paddingSeconds: 0
-        });
-        if (!matchesActiveProjectSession(projectSession)) return;
-
-        const remappedSections = normalizeSections(
-          Array.isArray(trimmed?.sections) ? trimmed.sections : [],
-          trimmed?.trimmedDuration || 0
-        );
-        const rebuiltSections = previousState.sections.map((s, index) => {
-          const remapped = remappedSections[index] || {};
-          return {
-            ...s,
-            id: `section-${index + 1}`,
-            index,
-            label: `Section ${index + 1}`,
-            start: Number.isFinite(Number(remapped.start)) ? Number(remapped.start) : s.start,
-            end: Number.isFinite(Number(remapped.end)) ? Number(remapped.end) : s.end,
-            duration: Number.isFinite(Number(remapped.duration))
-              ? Number(remapped.duration)
-              : Math.max(0, s.end - s.start),
-            sourceStart: Number.isFinite(Number(remapped.sourceStart)) ? Number(remapped.sourceStart) : s.start,
-            sourceEnd: Number.isFinite(Number(remapped.sourceEnd)) ? Number(remapped.sourceEnd) : s.end
-          };
-        });
-
-        const rebuiltAnchors = rebuiltSections.map((s, index) => {
-          const origSection = previousState.sections[index];
-          const anchor = sectionAnchors.get(origSection.id);
-          return {
-            time: s.start,
-            pipX: anchor ? anchor.pipX : previousState.defaultPipX,
-            pipY: anchor ? anchor.pipY : previousState.defaultPipY,
-            pipVisible: anchor ? anchor.pipVisible : true,
-            cameraFullscreen: anchor ? anchor.cameraFullscreen : false,
-            sectionId: s.id,
-            autoSection: true
-          };
-        });
-
-        const manualKeyframes = previousState.keyframes
-          .filter(kf => !kf.sectionId)
-          .map(kf => {
-            const time = kf.time;
-            for (let i = 0; i < segments.length; i++) {
-              if (time >= segments[i].start - 0.001 && time <= segments[i].end + 0.001) {
-                const remapped = remappedSections[i];
-                if (!remapped) return null;
-                return { ...kf, time: roundMs(Math.max(0, remapped.start + (time - segments[i].start))) };
-              }
-            }
-            return null;
-          })
-          .filter(Boolean)
-          .sort((a, b) => a.time - b.time);
-
-        const trimmedIndex = previousState.sections.findIndex(s => s.id === dragState.sectionId);
-        const nextSelected = rebuiltSections[trimmedIndex] || rebuiltSections[0];
-
-        enterEditor(
-          null, null,
-          trimmed?.screenPath || null,
-          trimmed?.cameraPath || null,
-          trimmed?.trimmedDuration || rebuiltSections[rebuiltSections.length - 1]?.end || 0,
-          rebuiltSections,
-          {
-            keyframes: [...manualKeyframes, ...rebuiltAnchors].sort((a, b) => a.time - b.time),
-            selectedSectionId: nextSelected?.id || null,
-            hasCamera: !!trimmed?.cameraPath,
-            screenFitMode: previousState.screenFitMode,
-            sourceWidth: previousState.sourceWidth,
-            sourceHeight: previousState.sourceHeight,
-            initialView: 'timeline'
-          }
-        );
-
-        await persistProjectNow();
-      } catch (error) {
-        console.error('Failed to trim section edge:', error);
-        setWorkspaceView('timeline');
-      }
+      if (!sourceStartChanged && !sourceEndChanged) return;
+      syncSectionAnchorKeyframes();
+      renderSectionMarkers();
+      editorSeek(section.start);
+      scheduleProjectSave();
     }
 
     function getRenderKeyframes() {
@@ -1926,32 +1900,42 @@
         return;
       }
 
-      let screenPath = recoveryTake.screenPath;
-      let cameraPath = recoveryTake.cameraPath || null;
+      const takeId = recoveryTake.id || `take-${Date.now()}`;
+      const screenPath = recoveryTake.screenPath;
+      const cameraPath = recoveryTake.cameraPath || null;
       let recoverySections = normalizeTakeSections(recoveryTake.sections, recoveryTake.recordedDuration);
       const recoverySegments = Array.isArray(recoveryTake.trimSegments) ? recoveryTake.trimSegments : [];
       const fallbackSections = buildRemappedSectionsFromSegments(recoverySegments);
 
-      showProcessingState('Recovering recording...', 'Restoring recording from before the crash');
-
       try {
         if (recoverySegments.length > 0) {
-          const trimmed = await window.electronAPI.trimSilence({
-            screenPath,
-            cameraPath,
-            segments: recoverySegments,
-            outputFolder: saveFolder,
-            cleanupInput: false
+          const computed = await window.electronAPI.computeSections({
+            segments: recoverySegments
           });
           if (!matchesActiveProjectSession(projectSession)) return;
-          screenPath = trimmed?.screenPath || screenPath;
-          cameraPath = trimmed?.cameraPath || cameraPath;
-          recoverySections = Array.isArray(trimmed?.sections) && trimmed.sections.length > 0
-            ? attachSectionTranscripts(trimmed.sections, fallbackSections)
+          recoverySections = Array.isArray(computed?.sections) && computed.sections.length > 0
+            ? attachSectionTranscripts(computed.sections, fallbackSections)
             : (fallbackSections.length > 0 ? fallbackSections : recoverySections);
         }
 
-        const appendResult = await appendTakeToTimeline({
+        // Set takeId on all sections
+        recoverySections = recoverySections.map(s => ({ ...s, takeId }));
+
+        // Add take to project before entering editor (video pool needs it)
+        if (activeProject) {
+          if (!Array.isArray(activeProject.takes)) activeProject.takes = [];
+          activeProject.takes.push({
+            id: takeId,
+            createdAt: recoveryTake.createdAt || new Date().toISOString(),
+            duration: recoveryTake.recordedDuration,
+            screenPath,
+            cameraPath,
+            sections: recoverySections
+          });
+        }
+
+        const appendResult = appendTakeToTimeline({
+          takeId,
           screenPath,
           cameraPath,
           recordedDuration: recoveryTake.recordedDuration,
@@ -1960,16 +1944,13 @@
         });
         if (!appendResult || !matchesActiveProjectSession(projectSession)) return;
 
-        if (activeProject) {
-          if (!Array.isArray(activeProject.takes)) activeProject.takes = [];
-          activeProject.takes.push({
-            id: recoveryTake.id || `take-${Date.now()}`,
-            createdAt: recoveryTake.createdAt || new Date().toISOString(),
-            duration: appendResult.takeDuration,
-            screenPath,
-            cameraPath,
-            sections: appendResult.takeSections
-          });
+        if (activeProject && appendResult) {
+          // Update the take's sections with the final result
+          const take = activeProject.takes.find(t => t.id === takeId);
+          if (take) {
+            take.duration = appendResult.takeDuration;
+            take.sections = appendResult.takeSections;
+          }
           await persistProjectNow();
         }
 
@@ -1980,17 +1961,6 @@
           setWorkspaceView(editorState ? 'timeline' : 'recording');
         }
       }
-    }
-
-    async function concatTimelineVideos(existingPath, nextPath, suffix) {
-      if (!existingPath) return nextPath || null;
-      if (!nextPath) return existingPath;
-      const result = await window.electronAPI.concatVideos({
-        inputPaths: [existingPath, nextPath],
-        outputFolder: saveFolder,
-        suffix
-      });
-      return result?.outputPath || nextPath;
     }
 
     function setProcessingProgress(progress = null) {
@@ -2053,157 +2023,81 @@
         .sort((a, b) => a.time - b.time);
     }
 
-    async function deleteSelectedSection() {
+    function deleteSelectedSection() {
       if (!editorState || editorState.rendering) return;
-      const projectSession = getActiveProjectSession();
       const selectedSection = getSelectedSection();
       if (!selectedSection) return;
 
-      const previousState = {
-        sections: Array.isArray(editorState.sections) ? editorState.sections.map(section => ({ ...section })) : [],
-        keyframes: Array.isArray(editorState.keyframes) ? editorState.keyframes.map(keyframe => ({ ...keyframe })) : [],
-        screenPath: editorState.screenPath || null,
-        cameraPath: editorState.cameraPath || null,
-        hasCamera: !!editorState.hasCamera,
-        screenFitMode: editorState.screenFitMode,
-        sourceWidth: editorState.sourceWidth || null,
-        sourceHeight: editorState.sourceHeight || null,
-        screenBlobUrl: editorState.screenBlobUrl || '',
-        cameraBlobUrl: editorState.cameraBlobUrl || ''
-      };
-
-      const selectedIndex = previousState.sections.findIndex(section => section.id === selectedSection.id);
+      const selectedIndex = editorState.sections.findIndex(section => section.id === selectedSection.id);
       if (selectedIndex < 0) return;
 
-      const remainingSections = previousState.sections.filter(section => section.id !== selectedSection.id);
-      const manualKeyframes = remapManualKeyframesAfterSectionDelete(previousState.keyframes, selectedSection);
-      const sectionAnchors = buildSectionAnchorSnapshot(previousState.keyframes);
+      // Remove the section
+      editorState.sections = editorState.sections.filter(section => section.id !== selectedSection.id);
 
-      showProcessingState('Updating timeline...', `Removing ${selectedSection.label}`);
-
-      try {
-        if (remainingSections.length === 0) {
-          if (previousState.screenBlobUrl.startsWith('blob:')) URL.revokeObjectURL(previousState.screenBlobUrl);
-          if (previousState.cameraBlobUrl.startsWith('blob:')) URL.revokeObjectURL(previousState.cameraBlobUrl);
-
-          editorState = null;
-          editorScreenVideo.src = '';
-          editorCameraVideo.src = '';
-
-          if (activeProject) {
-            activeProject = {
-              ...activeProject,
-              timeline: {
-                duration: 0,
-                sections: [],
-                keyframes: [],
-                selectedSectionId: null,
-                screenPath: null,
-                cameraPath: null,
-                hasCamera: false,
-                sourceWidth: previousState.sourceWidth,
-                sourceHeight: previousState.sourceHeight
-              }
-            };
-          }
-
-          await persistProjectNow();
-          setWorkspaceView('recording');
-          return;
+      if (editorState.sections.length === 0) {
+        const savedSourceWidth = editorState.sourceWidth || null;
+        const savedSourceHeight = editorState.sourceHeight || null;
+        clearEditorState();
+        if (activeProject) {
+          activeProject = {
+            ...activeProject,
+            timeline: {
+              duration: 0,
+              sections: [],
+              keyframes: [],
+              selectedSectionId: null,
+              hasCamera: false,
+              sourceWidth: savedSourceWidth,
+              sourceHeight: savedSourceHeight
+            }
+          };
         }
-
-        const trimmed = await window.electronAPI.trimSilence({
-          screenPath: previousState.screenPath,
-          cameraPath: previousState.hasCamera ? previousState.cameraPath : null,
-          segments: remainingSections.map(section => ({
-            start: section.start,
-            end: section.end
-          })),
-          outputFolder: saveFolder,
-          paddingSeconds: 0
-        });
-        if (!matchesActiveProjectSession(projectSession)) return;
-
-        const remappedSections = normalizeSections(
-          Array.isArray(trimmed?.sections) ? trimmed.sections : [],
-          trimmed?.trimmedDuration || 0
-        );
-        const rebuiltSections = remainingSections.map((section, index) => {
-          const remapped = remappedSections[index] || {};
-          return {
-            ...section,
-            id: `section-${index + 1}`,
-            index,
-            label: `Section ${index + 1}`,
-            start: Number.isFinite(Number(remapped.start)) ? Number(remapped.start) : section.start,
-            end: Number.isFinite(Number(remapped.end)) ? Number(remapped.end) : section.end,
-            duration: Number.isFinite(Number(remapped.duration))
-              ? Number(remapped.duration)
-              : Math.max(0, Number(section.end) - Number(section.start)),
-            sourceStart: Number.isFinite(Number(remapped.sourceStart)) ? Number(remapped.sourceStart) : section.start,
-            sourceEnd: Number.isFinite(Number(remapped.sourceEnd)) ? Number(remapped.sourceEnd) : section.end
-          };
-        });
-
-        const rebuiltAnchors = rebuiltSections.map((section, index) => {
-          const previousSection = remainingSections[index];
-          const anchor = sectionAnchors.get(previousSection.id);
-          return {
-            time: section.start,
-            pipX: anchor ? anchor.pipX : editorState.defaultPipX,
-            pipY: anchor ? anchor.pipY : editorState.defaultPipY,
-            pipVisible: anchor ? anchor.pipVisible : true,
-            cameraFullscreen: anchor ? anchor.cameraFullscreen : false,
-            sectionId: section.id,
-            autoSection: true
-          };
-        });
-
-        const nextSelectedSection = rebuiltSections[Math.min(selectedIndex, rebuiltSections.length - 1)] || rebuiltSections[0];
-
-        enterEditor(
-          null,
-          null,
-          trimmed?.screenPath || null,
-          trimmed?.cameraPath || null,
-          trimmed?.trimmedDuration || rebuiltSections[rebuiltSections.length - 1]?.end || 0,
-          rebuiltSections,
-          {
-            keyframes: [...manualKeyframes, ...rebuiltAnchors].sort((a, b) => a.time - b.time),
-            selectedSectionId: nextSelectedSection?.id || null,
-            hasCamera: !!trimmed?.cameraPath,
-            screenFitMode: previousState.screenFitMode,
-            sourceWidth: previousState.sourceWidth,
-            sourceHeight: previousState.sourceHeight,
-            initialView: 'timeline'
-          }
-        );
-
-        await persistProjectNow();
-      } catch (error) {
-        console.error('Failed to delete selected section:', error);
-        setWorkspaceView('timeline');
+        persistProjectNow();
+        setWorkspaceView('recording');
+        return;
       }
+
+      // Remap manual keyframes
+      const manualKeyframes = remapManualKeyframesAfterSectionDelete(editorState.keyframes, selectedSection);
+      editorState.keyframes = manualKeyframes;
+
+      // Re-index sections
+      for (let i = 0; i < editorState.sections.length; i++) {
+        editorState.sections[i].id = `section-${i + 1}`;
+        editorState.sections[i].index = i;
+        editorState.sections[i].label = `Section ${i + 1}`;
+      }
+
+      recalculateTimelinePositions();
+      syncSectionAnchorKeyframes();
+
+      const nextSelected = editorState.sections[Math.min(selectedIndex, editorState.sections.length - 1)] || editorState.sections[0];
+      editorState.selectedSectionId = nextSelected?.id || null;
+
+      renderSectionMarkers();
+      editorSeek(nextSelected?.start || 0);
+      scheduleProjectSave();
     }
 
-    async function appendTakeToTimeline({ screenPath, cameraPath, recordedDuration, trimSections, projectSession }) {
+    function appendTakeToTimeline({ takeId, screenPath, cameraPath, recordedDuration, trimSections, projectSession }) {
       const takeSections = normalizeTakeSections(trimSections, recordedDuration);
+      // Ensure all sections carry the takeId
+      for (const section of takeSections) {
+        section.takeId = takeId;
+      }
       const takeDuration = takeSections.length > 0
         ? takeSections[takeSections.length - 1].end
         : Math.max(0, Number(recordedDuration) || 0);
 
       if (!matchesActiveProjectSession(projectSession)) return null;
 
+      const hasCamera = !!cameraPath;
+
       if (!editorState) {
         enterEditor(
-          null,
-          null,
-          screenPath,
-          cameraPath,
-          takeDuration,
           takeSections,
           {
-            hasCamera: !!cameraPath,
+            hasCamera,
             initialView: 'timeline'
           }
         );
@@ -2216,24 +2110,13 @@
       }
 
       const baseDuration = Math.max(0, Number(editorState.duration) || 0);
-      const existingSections = normalizeSections(editorState.sections, baseDuration);
+      const existingSections = editorState.sections.map(s => ({ ...s }));
       const existingKeyframes = Array.isArray(editorState.keyframes)
         ? editorState.keyframes.map(kf => ({ ...kf }))
         : [];
 
-      const timelineScreenPath = await concatTimelineVideos(editorState.screenPath, screenPath, 'timeline-screen');
-      const hadCameraBefore = !!(editorState.hasCamera && editorState.cameraPath);
-      const hasCameraNow = !!cameraPath;
-      let keepCamera = false;
-      let timelineCameraPath = null;
-      if (hadCameraBefore && hasCameraNow) {
-        keepCamera = true;
-        timelineCameraPath = await concatTimelineVideos(editorState.cameraPath, cameraPath, 'timeline-camera');
-      } else if (hadCameraBefore) {
-        keepCamera = true;
-        timelineCameraPath = editorState.cameraPath;
-      }
-      if (!matchesActiveProjectSession(projectSession)) return null;
+      const hadCameraBefore = !!editorState.hasCamera;
+      const keepCamera = hadCameraBefore || hasCamera;
 
       const startIndex = existingSections.length;
       const appendedSections = takeSections.map((section, idx) => {
@@ -2245,7 +2128,8 @@
           label: `Section ${sectionNumber}`,
           start: roundMs(section.start + baseDuration),
           end: roundMs(section.end + baseDuration),
-          duration: roundMs(section.end - section.start)
+          duration: roundMs(section.end - section.start),
+          takeId
         };
       });
 
@@ -2270,19 +2154,14 @@
       );
 
       enterEditor(
-        null,
-        null,
-        timelineScreenPath,
-        timelineCameraPath,
-        timelineDuration,
         timelineSections,
         {
           keyframes: [...withoutConflictingAnchors, ...newAnchors].sort((a, b) => a.time - b.time),
-          selectedSectionId: appendedSections[0]?.id || editorState.selectedSectionId,
+          selectedSectionId: appendedSections[0]?.id || editorState?.selectedSectionId,
           hasCamera: keepCamera,
-          screenFitMode: editorState.screenFitMode,
-          sourceWidth: editorState.sourceWidth,
-          sourceHeight: editorState.sourceHeight,
+          screenFitMode: editorState?.screenFitMode,
+          sourceWidth: editorState?.sourceWidth,
+          sourceHeight: editorState?.sourceHeight,
           initialView: 'timeline'
         }
       );
@@ -2351,11 +2230,11 @@
       if (results.screen) {
         const takeId = `take-${Date.now()}`;
         const takeCreatedAt = new Date().toISOString();
-        let screenPath = results.screen.path;
-        let cameraPath = results.camera?.path || null;
+        const screenPath = results.screen.path;
+        const cameraPath = results.camera?.path || null;
         let sectionsForTimeline = buildDefaultSectionsForDuration(recordedDuration);
 
-        // Trim silence if we have speech segments
+        // Compute sections from speech segments (instant, no FFmpeg)
         const activeSegments = speechSegments.filter(s => !s.deleted);
         const fallbackSections = buildRemappedSectionsFromSegments(activeSegments);
         await saveRecoveryTake({
@@ -2368,43 +2247,41 @@
           trimSegments: activeSegments
         });
         if (activeSegments.length > 0) {
-          // Show processing view while trimming.
-          showProcessingState(
-            'Trimming silence...',
-            `Processing ${activeSegments.length} segment${activeSegments.length !== 1 ? 's' : ''}`
-          );
-
           try {
-            const trimmed = await window.electronAPI.trimSilence({
-              screenPath,
-              cameraPath,
-              segments: activeSegments,
-              outputFolder: saveFolder,
-              cleanupInput: false
+            const computed = await window.electronAPI.computeSections({
+              segments: activeSegments
             });
-            screenPath = trimmed.screenPath || screenPath;
-            cameraPath = trimmed.cameraPath || cameraPath;
-            sectionsForTimeline = Array.isArray(trimmed.sections) && trimmed.sections.length > 0
-              ? attachSectionTranscripts(trimmed.sections, fallbackSections)
+            sectionsForTimeline = Array.isArray(computed?.sections) && computed.sections.length > 0
+              ? attachSectionTranscripts(computed.sections, fallbackSections)
               : (fallbackSections.length > 0 ? fallbackSections : sectionsForTimeline);
             if (!matchesActiveProjectSession(projectSession)) return;
-            if (!trimmed.sections || trimmed.sections.length === 0) {
-              console.warn('Trim metadata missing from main process; using renderer-derived sections.');
-            }
           } catch (err) {
-            console.error('Trim failed, preserving raw recording for recovery:', err);
-            if (matchesActiveProjectSession(projectSession)) {
-              setWorkspaceView('recording');
-              window.alert(err?.message || 'Trimming failed. The raw recording was saved and can be recovered by reopening this project.');
-            }
-            return;
+            console.warn('Section computation failed, using fallback sections:', err);
+            if (fallbackSections.length > 0) sectionsForTimeline = fallbackSections;
           }
         } else if (hadScribe) {
           console.warn('No speech detected, using full recording');
         }
 
+        // Set takeId on all sections
+        sectionsForTimeline = sectionsForTimeline.map(s => ({ ...s, takeId }));
+
+        // Add take to project before entering editor (video pool needs it)
+        if (activeProject) {
+          if (!Array.isArray(activeProject.takes)) activeProject.takes = [];
+          activeProject.takes.push({
+            id: takeId,
+            createdAt: takeCreatedAt,
+            duration: recordedDuration,
+            screenPath,
+            cameraPath,
+            sections: sectionsForTimeline
+          });
+        }
+
         try {
-          const appendResult = await appendTakeToTimeline({
+          const appendResult = appendTakeToTimeline({
+            takeId,
             screenPath,
             cameraPath,
             recordedDuration,
@@ -2413,16 +2290,12 @@
           });
           if (!appendResult || !matchesActiveProjectSession(projectSession)) return;
 
-          if (activeProject) {
-            if (!Array.isArray(activeProject.takes)) activeProject.takes = [];
-            activeProject.takes.push({
-              id: takeId,
-              createdAt: takeCreatedAt,
-              duration: appendResult.takeDuration,
-              screenPath,
-              cameraPath,
-              sections: appendResult.takeSections
-            });
+          if (activeProject && appendResult) {
+            const take = activeProject.takes.find(t => t.id === takeId);
+            if (take) {
+              take.duration = appendResult.takeDuration;
+              take.sections = appendResult.takeSections;
+            }
             await persistProjectNow();
           }
           await completeRecoveryTake();
@@ -2443,27 +2316,23 @@
 
     // ===== Editor =====
 
-    function enterEditor(screenBlob, cameraBlob, screenPath, cameraPath, recordedDuration, rawSections, opts = {}) {
+    function enterEditor(rawSections, opts = {}) {
       // Stop live preview while timeline is active.
       if (drawRAF) { cancelAnimationFrame(drawRAF); drawRAF = null; }
       if (editorDrawRAF) { cancelAnimationFrame(editorDrawRAF); editorDrawRAF = null; }
 
-      // Clean up previous editor blob URLs when replacing timeline media.
-      if (editorState) {
-        if (editorState.screenBlobUrl && editorState.screenBlobUrl.startsWith('blob:')) URL.revokeObjectURL(editorState.screenBlobUrl);
-        if (editorState.cameraBlobUrl && editorState.cameraBlobUrl.startsWith('blob:')) URL.revokeObjectURL(editorState.cameraBlobUrl);
-      }
-
-      const screenBlobUrl = screenPath
-        ? pathToFileUrl(screenPath)
-        : (screenBlob ? URL.createObjectURL(screenBlob) : '');
-      const cameraBlobUrl = cameraPath
-        ? pathToFileUrl(cameraPath)
-        : (cameraBlob ? URL.createObjectURL(cameraBlob) : null);
+      // Clean up previous video pool
+      cleanupVideoPool();
 
       const defaultPipX = CANVAS_W - PIP_SIZE - PIP_MARGIN;
       const defaultPipY = CANVAS_H - PIP_SIZE - PIP_MARGIN;
-      const sections = normalizeSections(rawSections, recordedDuration);
+      const sections = normalizeSections(rawSections, opts.duration || 0);
+
+      // Calculate duration from sections
+      const duration = sections.length > 0
+        ? sections[sections.length - 1].end
+        : (opts.duration || 0);
+
       const sectionKeyframes = sections.map(section => ({
         time: section.start,
         pipX: defaultPipX,
@@ -2480,11 +2349,7 @@
       const keyframes = (providedKeyframes || sectionKeyframes).sort((a, b) => a.time - b.time);
 
       editorState = {
-        screenBlobUrl,
-        cameraBlobUrl,
-        screenPath: screenPath || null,
-        cameraPath: cameraPath || null,
-        duration: recordedDuration,
+        duration,
         currentTime: 0,
         playing: false,
         pipSize: PIP_SIZE,
@@ -2496,41 +2361,53 @@
         screenFitMode: opts.screenFitMode || screenFitSelect.value,
         rendering: false,
         renderProgress: 0,
-        hasCamera: typeof opts.hasCamera === 'boolean' ? opts.hasCamera : !!(cameraBlobUrl || cameraBlob),
+        hasCamera: typeof opts.hasCamera === 'boolean' ? opts.hasCamera : false,
         sourceWidth: opts.sourceWidth || null,
         sourceHeight: opts.sourceHeight || null
       };
       screenFitSelect.value = editorState.screenFitMode === 'fit' ? 'fit' : 'fill';
 
-      editorScreenVideo.src = screenBlobUrl;
-      editorScreenVideo.currentTime = 0;
-      if (cameraBlobUrl) {
-        editorCameraVideo.src = cameraBlobUrl;
-        editorCameraVideo.currentTime = 0;
-      } else {
-        editorCameraVideo.src = '';
+      // Pre-create video elements for all referenced takes
+      const referencedTakeIds = new Set(sections.map(s => s.takeId).filter(Boolean));
+      for (const takeId of referencedTakeIds) {
+        getOrCreateTakeVideos(takeId);
       }
 
-      // Wait for metadata to get accurate duration and source resolution.
-      editorScreenVideo.onloadedmetadata = () => {
-        if (!editorState) return;
-        editorState.sourceWidth = editorScreenVideo.videoWidth || editorState.sourceWidth;
-        editorState.sourceHeight = editorScreenVideo.videoHeight || editorState.sourceHeight;
-        if (isFinite(editorScreenVideo.duration) && editorScreenVideo.duration > 0) {
-          editorState.duration = editorScreenVideo.duration;
+      // Set up initial active take from first section
+      if (sections.length > 0) {
+        const firstSection = sections[0];
+        activeTakeId = firstSection.takeId;
+        activePlaybackSection = firstSection;
+        const videos = getOrCreateTakeVideos(firstSection.takeId);
+        if (videos) {
+          videos.screen.currentTime = firstSection.sourceStart;
+          if (videos.camera) videos.camera.currentTime = firstSection.sourceStart;
         }
-        editorState.sections = normalizeSections(editorState.sections, editorState.duration);
-        syncSectionAnchorKeyframes();
-        renderSectionMarkers();
-        updateEditorTimeDisplay();
-        scheduleProjectSave();
+      }
 
-        extractWaveformPeaks(screenBlobUrl).then(peaks => {
-          if (!editorState) return;
-          waveformPeaks = peaks;
-          renderWaveform();
-        });
-      };
+      // Wait for metadata from first take's screen video to get source resolution
+      if (referencedTakeIds.size > 0) {
+        const firstTakeId = sections[0]?.takeId;
+        const videos = firstTakeId ? getOrCreateTakeVideos(firstTakeId) : null;
+        if (videos) {
+          const onMeta = () => {
+            if (!editorState) return;
+            editorState.sourceWidth = videos.screen.videoWidth || editorState.sourceWidth;
+            editorState.sourceHeight = videos.screen.videoHeight || editorState.sourceHeight;
+            syncSectionAnchorKeyframes();
+            renderSectionMarkers();
+            updateEditorTimeDisplay();
+            scheduleProjectSave();
+            extractWaveformPeaks().then(peaks => {
+              if (!editorState) return;
+              waveformPeaks = peaks;
+              renderWaveform();
+            });
+          };
+          if (videos.screen.readyState >= 1) onMeta();
+          else videos.screen.addEventListener('loadedmetadata', onMeta, { once: true });
+        }
+      }
 
       updateEditorTimeDisplay();
       renderSectionMarkers();
@@ -2617,16 +2494,23 @@
     function editorPlay() {
       if (!editorState || editorState.rendering) return;
       editorState.playing = true;
-      editorScreenVideo.play();
-      if (editorState.hasCamera) editorCameraVideo.play();
+      if (activeTakeId) {
+        const videos = getOrCreateTakeVideos(activeTakeId);
+        if (videos) {
+          videos.screen.play();
+          if (editorState.hasCamera && videos.camera) videos.camera.play();
+        }
+      }
       editorPlayBtn.textContent = 'Pause';
     }
 
     function editorPause() {
       if (!editorState) return;
       editorState.playing = false;
-      editorScreenVideo.pause();
-      if (editorState.hasCamera) editorCameraVideo.pause();
+      for (const [, videos] of takeVideoPool) {
+        videos.screen.pause();
+        if (videos.camera) videos.camera.pause();
+      }
       editorPlayBtn.textContent = 'Play';
     }
 
@@ -2640,8 +2524,25 @@
       if (!editorState) return;
       time = Math.max(0, Math.min(time, editorState.duration));
       editorState.currentTime = time;
-      editorScreenVideo.currentTime = time;
-      if (editorState.hasCamera) editorCameraVideo.currentTime = time;
+
+      const resolved = resolveTimeToSource(time);
+      if (resolved) {
+        // Pause previous take if switching
+        if (activeTakeId && activeTakeId !== resolved.takeId) {
+          const oldVideos = getOrCreateTakeVideos(activeTakeId);
+          if (oldVideos) {
+            oldVideos.screen.pause();
+            if (oldVideos.camera) oldVideos.camera.pause();
+          }
+        }
+        activeTakeId = resolved.takeId;
+        activePlaybackSection = resolved.section;
+        const videos = getOrCreateTakeVideos(resolved.takeId);
+        if (videos) {
+          videos.screen.currentTime = resolved.sourceTime;
+          if (videos.camera) videos.camera.currentTime = resolved.sourceTime;
+        }
+      }
       updateEditorTimeDisplay();
       updateScrubberPosition();
     }
@@ -2655,36 +2556,64 @@
     function editorDrawLoop() {
       if (!editorState) return;
 
-      if (editorState.playing) {
-        editorState.currentTime = editorScreenVideo.currentTime;
-        updateEditorTimeDisplay();
-        updateScrubberPosition();
+      if (editorState.playing && activeTakeId && activePlaybackSection) {
+        const videos = getOrCreateTakeVideos(activeTakeId);
+        if (videos) {
+          const sourceTime = videos.screen.currentTime;
+          const timelineTime = activePlaybackSection.start + (sourceTime - activePlaybackSection.sourceStart);
+          editorState.currentTime = timelineTime;
 
-        // Drift correction
-        if (editorState.hasCamera) {
-          const drift = Math.abs(editorScreenVideo.currentTime - editorCameraVideo.currentTime);
-          if (drift > 0.05) {
-            editorCameraVideo.currentTime = editorScreenVideo.currentTime;
+          // Check if we've passed the current section's end
+          if (sourceTime >= activePlaybackSection.sourceEnd - 0.01) {
+            const currentIdx = editorState.sections.indexOf(activePlaybackSection);
+            const nextSection = editorState.sections[currentIdx + 1];
+
+            if (nextSection) {
+              // Pause current take
+              videos.screen.pause();
+              if (videos.camera) videos.camera.pause();
+
+              // Switch to next section
+              const nextVideos = getOrCreateTakeVideos(nextSection.takeId);
+              if (nextVideos) {
+                nextVideos.screen.currentTime = nextSection.sourceStart;
+                if (nextVideos.camera) nextVideos.camera.currentTime = nextSection.sourceStart;
+                nextVideos.screen.play();
+                if (editorState.hasCamera && nextVideos.camera) nextVideos.camera.play();
+                activeTakeId = nextSection.takeId;
+                activePlaybackSection = nextSection;
+              }
+            } else {
+              // End of timeline
+              editorPause();
+            }
+          }
+
+          // Drift correction for camera
+          if (editorState.hasCamera && videos.camera) {
+            const drift = Math.abs(videos.screen.currentTime - videos.camera.currentTime);
+            if (drift > 0.05) {
+              videos.camera.currentTime = videos.screen.currentTime;
+            }
           }
         }
 
-        // Auto-pause at end
-        if (editorScreenVideo.ended) {
-          editorPause();
-        }
+        updateEditorTimeDisplay();
+        updateScrubberPosition();
       }
 
       // Draw composite frame
       editorCtx.fillStyle = '#000';
       editorCtx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-      const hasScreen = editorScreenVideo.videoWidth > 0;
-      const hasCamera = editorState.hasCamera && editorCameraVideo.videoWidth > 0;
+      const activeVideos = activeTakeId ? getOrCreateTakeVideos(activeTakeId) : null;
+      const hasScreen = activeVideos && activeVideos.screen.videoWidth > 0;
+      const hasCamera = editorState.hasCamera && activeVideos?.camera && activeVideos.camera.videoWidth > 0;
 
       const drawScreenFn = editorState.screenFitMode === 'fill' ? drawFill : drawFit;
 
       if (hasScreen) {
-        drawScreenFn(editorCtx, editorScreenVideo, 0, 0, CANVAS_W, CANVAS_H);
+        drawScreenFn(editorCtx, activeVideos.screen, 0, 0, CANVAS_W, CANVAS_H);
       }
 
       if (hasCamera) {
@@ -2696,11 +2625,11 @@
           const camW = editorState.pipSize + (CANVAS_W - editorState.pipSize) * t;
           const camH = editorState.pipSize + (CANVAS_H - editorState.pipSize) * t;
           const camR = 12 * (1 - t);
-          drawCameraRect(editorCtx, editorCameraVideo, camX, camY, camW, camH, camR);
+          drawCameraRect(editorCtx, activeVideos.camera, camX, camY, camW, camH, camR);
         } else if (kf.opacity > 0) {
           editorCtx.save();
           editorCtx.globalAlpha = kf.opacity;
-          drawPip(editorCtx, editorCameraVideo, kf.pipX, kf.pipY, editorState.pipSize, editorState.pipSize);
+          drawPip(editorCtx, activeVideos.camera, kf.pipX, kf.pipY, editorState.pipSize, editorState.pipSize);
           editorCtx.restore();
         }
       }
@@ -2858,9 +2787,23 @@
 
         const renderKeyframes = getRenderKeyframes();
 
+        // Collect takes referenced by sections
+        const referencedTakeIds = new Set(editorState.sections.map(s => s.takeId).filter(Boolean));
+        const takes = [];
+        for (const takeId of referencedTakeIds) {
+          const take = activeProject?.takes?.find(t => t.id === takeId);
+          if (take) {
+            takes.push({ id: take.id, screenPath: take.screenPath, cameraPath: take.cameraPath });
+          }
+        }
+
         const mp4Path = await window.electronAPI.renderComposite({
-          screenPath: editorState.screenPath,
-          cameraPath: editorState.cameraPath,
+          takes,
+          sections: editorState.sections.map(s => ({
+            takeId: s.takeId,
+            sourceStart: s.sourceStart,
+            sourceEnd: s.sourceEnd
+          })),
           keyframes: renderKeyframes,
           pipSize: editorState.pipSize,
           screenFitMode: editorState.screenFitMode,
@@ -3115,14 +3058,6 @@
       if (event.key !== 'Enter') return;
       event.preventDefault();
       createProjectBtn.click();
-    });
-
-    window.electronAPI.onTrimSilenceProgress((payload) => {
-      showProcessingState(
-        payload?.title || 'Trimming silence...',
-        payload?.status || 'Processing segments',
-        payload?.progress
-      );
     });
 
     // Init

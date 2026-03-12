@@ -31,14 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   projectSetLast: (projectFolder) => ipcRenderer.invoke('project-set-last', projectFolder),
   setContentProtection: (enabled) => ipcRenderer.invoke('set-content-protection', enabled),
   getSources: () => ipcRenderer.invoke('get-sources'),
-  concatVideos: (opts) => ipcRenderer.invoke('concat-videos', opts),
+  computeSections: (opts) => ipcRenderer.invoke('compute-sections', opts),
   renderComposite: (opts) => ipcRenderer.invoke('render-composite', opts),
-  getScribeToken: () => ipcRenderer.invoke('get-scribe-token'),
-  trimSilence: (opts) => ipcRenderer.invoke('trim-silence', opts),
-  onTrimSilenceProgress: (callback) => {
-    if (typeof callback !== 'function') return () => {}
-    const listener = (event, payload) => callback(payload)
-    ipcRenderer.on('trim-silence-progress', listener)
-    return () => ipcRenderer.removeListener('trim-silence-progress', listener)
-  }
+  getScribeToken: () => ipcRenderer.invoke('get-scribe-token')
 })
