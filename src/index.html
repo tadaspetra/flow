@@ -1178,6 +1178,8 @@
         edge,
         originalSourceStart: section.sourceStart,
         originalSourceEnd: section.sourceEnd,
+        originalStart: section.start,
+        originalEnd: section.end,
         startMouseX: e.clientX,
         pixelsPerSecond: rect.width / editorState.duration
       };
@@ -1206,14 +1208,23 @@
           trimDragState.originalSourceEnd - MIN_DURATION,
           trimDragState.originalSourceStart + deltaTime
         )));
+        // Keep right edge fixed, move left edge only
+        const newDuration = section.sourceEnd - section.sourceStart;
+        section.end = trimDragState.originalEnd;
+        section.start = roundMs(section.end - newDuration);
+        section.duration = roundMs(newDuration);
       } else {
         section.sourceEnd = roundMs(Math.max(
           section.sourceStart + MIN_DURATION,
           trimDragState.originalSourceEnd + deltaTime
         ));
+        // Keep left edge fixed, move right edge only
+        const newDuration = section.sourceEnd - section.sourceStart;
+        section.start = trimDragState.originalStart;
+        section.end = roundMs(section.start + newDuration);
+        section.duration = roundMs(newDuration);
       }
 
-      recalculateTimelinePositions();
       renderSectionMarkers();
     }
 
@@ -1225,6 +1236,8 @@
       const sourceEndChanged = Math.abs(section.sourceEnd - trimDragState.originalSourceEnd) > 0.01;
       trimDragState = null;
       if (!sourceStartChanged && !sourceEndChanged) return;
+      // Now reflow the full timeline
+      recalculateTimelinePositions();
       syncSectionAnchorKeyframes();
       renderSectionMarkers();
       editorSeek(section.start);
