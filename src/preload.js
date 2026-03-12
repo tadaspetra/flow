@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   projectCreate: (opts) => ipcRenderer.invoke('project-create', opts),
   projectOpen: (projectFolder) => ipcRenderer.invoke('project-open', projectFolder),
   projectSave: (payload) => ipcRenderer.invoke('project-save', payload),
+  projectSetRecoveryTake: (payload) => ipcRenderer.invoke('project-set-recovery-take', payload),
+  projectClearRecoveryTake: (projectFolder) => ipcRenderer.invoke('project-clear-recovery-take', projectFolder),
+  projectCompleteRecoveryTake: (projectFolder) => ipcRenderer.invoke('project-complete-recovery-take', projectFolder),
   projectListRecent: (limit) => ipcRenderer.invoke('project-list-recent', limit),
   projectLoadLast: () => ipcRenderer.invoke('project-load-last'),
   projectSetLast: (projectFolder) => ipcRenderer.invoke('project-set-last', projectFolder),
@@ -31,5 +34,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   concatVideos: (opts) => ipcRenderer.invoke('concat-videos', opts),
   renderComposite: (opts) => ipcRenderer.invoke('render-composite', opts),
   getScribeToken: () => ipcRenderer.invoke('get-scribe-token'),
-  trimSilence: (opts) => ipcRenderer.invoke('trim-silence', opts)
+  trimSilence: (opts) => ipcRenderer.invoke('trim-silence', opts),
+  onTrimSilenceProgress: (callback) => {
+    if (typeof callback !== 'function') return () => {}
+    const listener = (event, payload) => callback(payload)
+    ipcRenderer.on('trim-silence-progress', listener)
+    return () => ipcRenderer.removeListener('trim-silence-progress', listener)
+  }
 })

@@ -259,6 +259,7 @@
     const processingView = document.getElementById('processingView');
     const processingTitle = document.getElementById('processingTitle');
     const processingStatus = document.getElementById('processingStatus');
+    const processingBar = document.getElementById('processingBar');
 
     // Editor DOM refs
     const editorView = document.getElementById('editorView');
@@ -486,6 +487,36 @@
       });
 
       await persistQueue;
+    }
+
+    async function saveRecoveryTake(take) {
+      if (!activeProjectPath || !take?.screenPath) return;
+      try {
+        await window.electronAPI.projectSetRecoveryTake({
+          projectPath: activeProjectPath,
+          take
+        });
+      } catch (error) {
+        console.error('Failed to save recovery take:', error);
+      }
+    }
+
+    async function clearRecoveryTake(projectPath = activeProjectPath) {
+      if (!projectPath) return;
+      try {
+        await window.electronAPI.projectClearRecoveryTake(projectPath);
+      } catch (error) {
+        console.error('Failed to clear recovery take:', error);
+      }
+    }
+
+    async function completeRecoveryTake(projectPath = activeProjectPath) {
+      if (!projectPath) return;
+      try {
+        await window.electronAPI.projectCompleteRecoveryTake(projectPath);
+      } catch (error) {
+        console.error('Failed to finalize recovery take:', error);
+      }
     }
 
     function scheduleProjectSave() {
@@ -1674,7 +1705,7 @@
             + `&audio_format=${audioFormat}`
             + `&commit_strategy=vad`
             + `&include_timestamps=true`
-            + `&vad_silence_threshold_secs=1.0`
+            + `&vad_silence_threshold_secs=2.0`
             + `&vad_threshold=0.8`
             + `&min_speech_duration_ms=200`
             + `&language_code=eng`;
@@ -1883,6 +1914,74 @@
       });
     }
 
+    async function recoverPendingTake(recoveryTake) {
+      if (!recoveryTake?.screenPath) return;
+
+      const projectSession = getActiveProjectSession();
+      const existingTake = Array.isArray(activeProject?.takes)
+        ? activeProject.takes.find((take) => take.id === recoveryTake.id)
+        : null;
+      if (existingTake) {
+        await completeRecoveryTake(projectSession.projectPath);
+        return;
+      }
+
+      let screenPath = recoveryTake.screenPath;
+      let cameraPath = recoveryTake.cameraPath || null;
+      let recoverySections = normalizeTakeSections(recoveryTake.sections, recoveryTake.recordedDuration);
+      const recoverySegments = Array.isArray(recoveryTake.trimSegments) ? recoveryTake.trimSegments : [];
+      const fallbackSections = buildRemappedSectionsFromSegments(recoverySegments);
+
+      showProcessingState('Recovering recording...', 'Restoring recording from before the crash');
+
+      try {
+        if (recoverySegments.length > 0) {
+          const trimmed = await window.electronAPI.trimSilence({
+            screenPath,
+            cameraPath,
+            segments: recoverySegments,
+            outputFolder: saveFolder,
+            cleanupInput: false
+          });
+          if (!matchesActiveProjectSession(projectSession)) return;
+          screenPath = trimmed?.screenPath || screenPath;
+          cameraPath = trimmed?.cameraPath || cameraPath;
+          recoverySections = Array.isArray(trimmed?.sections) && trimmed.sections.length > 0
+            ? attachSectionTranscripts(trimmed.sections, fallbackSections)
+            : (fallbackSections.length > 0 ? fallbackSections : recoverySections);
+        }
+
+        const appendResult = await appendTakeToTimeline({
+          screenPath,
+          cameraPath,
+          recordedDuration: recoveryTake.recordedDuration,
+          trimSections: recoverySections,
+          projectSession
+        });
+        if (!appendResult || !matchesActiveProjectSession(projectSession)) return;
+
+        if (activeProject) {
+          if (!Array.isArray(activeProject.takes)) activeProject.takes = [];
+          activeProject.takes.push({
+            id: recoveryTake.id || `take-${Date.now()}`,
+            createdAt: recoveryTake.createdAt || new Date().toISOString(),
+            duration: appendResult.takeDuration,
+            screenPath,
+            cameraPath,
+            sections: appendResult.takeSections
+          });
+          await persistProjectNow();
+        }
+
+        await completeRecoveryTake(projectSession.projectPath);
+      } catch (error) {
+        console.error('Failed to recover pending take:', error);
+        if (matchesActiveProjectSession(projectSession)) {
+          setWorkspaceView(editorState ? 'timeline' : 'recording');
+        }
+      }
+    }
+
     async function concatTimelineVideos(existingPath, nextPath, suffix) {
       if (!existingPath) return nextPath || null;
       if (!nextPath) return existingPath;
@@ -1894,9 +1993,24 @@
       return result?.outputPath || nextPath;
     }
 
-    function showProcessingState(title, status) {
+    function setProcessingProgress(progress = null) {
+      if (!processingBar) return;
+      const isDeterminate = Number.isFinite(Number(progress));
+      if (!isDeterminate) {
+        processingBar.classList.add('animate-pulse');
+        processingBar.style.width = '100%';
+        return;
+      }
+
+      const clamped = Math.max(0, Math.min(1, Number(progress)));
+      processingBar.classList.remove('animate-pulse');
+      processingBar.style.width = `${Math.max(2, Math.round(clamped * 100))}%`;
+    }
+
+    function showProcessingState(title, status, progress = null) {
       processingTitle.textContent = title || 'Processing...';
       processingStatus.textContent = status || '';
+      setProcessingProgress(progress);
       setWorkspaceView('processing');
     }
 
@@ -2235,13 +2349,24 @@
 
       // Enter editor if we have at least a screen recording
       if (results.screen) {
+        const takeId = `take-${Date.now()}`;
+        const takeCreatedAt = new Date().toISOString();
         let screenPath = results.screen.path;
         let cameraPath = results.camera?.path || null;
-        let trimSections = [];
+        let sectionsForTimeline = buildDefaultSectionsForDuration(recordedDuration);
 
         // Trim silence if we have speech segments
         const activeSegments = speechSegments.filter(s => !s.deleted);
         const fallbackSections = buildRemappedSectionsFromSegments(activeSegments);
+        await saveRecoveryTake({
+          id: takeId,
+          createdAt: takeCreatedAt,
+          screenPath,
+          cameraPath,
+          recordedDuration,
+          sections: sectionsForTimeline,
+          trimSegments: activeSegments
+        });
         if (activeSegments.length > 0) {
           // Show processing view while trimming.
           showProcessingState(
@@ -2254,29 +2379,31 @@
               screenPath,
               cameraPath,
               segments: activeSegments,
-              outputFolder: saveFolder
+              outputFolder: saveFolder,
+              cleanupInput: false
             });
             screenPath = trimmed.screenPath || screenPath;
             cameraPath = trimmed.cameraPath || cameraPath;
-            trimSections = Array.isArray(trimmed.sections) && trimmed.sections.length > 0
+            sectionsForTimeline = Array.isArray(trimmed.sections) && trimmed.sections.length > 0
               ? attachSectionTranscripts(trimmed.sections, fallbackSections)
-              : fallbackSections;
+              : (fallbackSections.length > 0 ? fallbackSections : sectionsForTimeline);
             if (!matchesActiveProjectSession(projectSession)) return;
             if (!trimmed.sections || trimmed.sections.length === 0) {
               console.warn('Trim metadata missing from main process; using renderer-derived sections.');
             }
           } catch (err) {
-            console.error('Trim failed, using original files:', err);
-            trimSections = [];
+            console.error('Trim failed, preserving raw recording for recovery:', err);
+            if (matchesActiveProjectSession(projectSession)) {
+              setWorkspaceView('recording');
+              window.alert(err?.message || 'Trimming failed. The raw recording was saved and can be recovered by reopening this project.');
+            }
+            return;
           }
         } else if (hadScribe) {
           console.warn('No speech detected, using full recording');
         }
 
         try {
-          const sectionsForTimeline = trimSections.length > 0
-            ? attachSectionTranscripts(trimSections, fallbackSections)
-            : fallbackSections;
           const appendResult = await appendTakeToTimeline({
             screenPath,
             cameraPath,
@@ -2289,8 +2416,8 @@
           if (activeProject) {
             if (!Array.isArray(activeProject.takes)) activeProject.takes = [];
             activeProject.takes.push({
-              id: `take-${Date.now()}`,
-              createdAt: new Date().toISOString(),
+              id: takeId,
+              createdAt: takeCreatedAt,
               duration: appendResult.takeDuration,
               screenPath,
               cameraPath,
@@ -2298,6 +2425,7 @@
             });
             await persistProjectNow();
           }
+          await completeRecoveryTake();
         } catch (error) {
           console.error('Failed to append recording to project timeline:', error);
           setWorkspaceView('recording');
@@ -2923,6 +3051,9 @@
         const opened = await window.electronAPI.projectOpen(projectPath);
         if (!opened?.projectPath || !opened?.project) return;
         await activateProject(opened.projectPath, opened.project, preferredView);
+        if (opened?.recoveryTake) {
+          await recoverPendingTake(opened.recoveryTake);
+        }
         await refreshRecentProjects();
       } catch (error) {
         console.error('Failed to open project:', error);
@@ -2984,6 +3115,14 @@
       if (event.key !== 'Enter') return;
       event.preventDefault();
       createProjectBtn.click();
+    });
+
+    window.electronAPI.onTrimSilenceProgress((payload) => {
+      showProcessingState(
+        payload?.title || 'Trimming silence...',
+        payload?.status || 'Processing segments',
+        payload?.progress
+      );
     });
 
     // Init

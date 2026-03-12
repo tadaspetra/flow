@@ -3,11 +3,12 @@ require('electron-reload')(__dirname)
 const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { execFile } = require('child_process')
+const { execFile, spawn } = require('child_process')
 
 let win = null
 const PROJECT_FILE_NAME = 'project.json'
 const PROJECT_META_FILE_NAME = 'projects-meta.json'
+const PROJECT_RECOVERY_FILE_NAME = '.pending-recording.json'
 const MAX_RECENT_PROJECTS = 20
 
 function createProjectId() {
@@ -27,6 +28,15 @@ function sanitizeProjectName(name) {
 
 function ensureDirectory(folderPath) {
   fs.mkdirSync(folderPath, { recursive: true })
+}
+
+function safeUnlink(filePath) {
+  if (!filePath) return
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+  } catch (error) {
+    console.warn(`Failed to delete file at ${filePath}:`, error)
+  }
 }
 
 function readJsonFile(filePath, fallback = null) {
@@ -171,6 +181,86 @@ function normalizeProjectData(rawProject, projectFolder) {
 
 function getProjectFilePath(projectFolder) {
   return path.join(projectFolder, PROJECT_FILE_NAME)
+}
+
+function getProjectRecoveryFilePath(projectFolder) {
+  return path.join(projectFolder, PROJECT_RECOVERY_FILE_NAME)
+}
+
+function normalizeRecoveryTake(rawTake, projectFolder) {
+  if (!rawTake || typeof rawTake !== 'object') return null
+
+  const screenPath = projectFolder
+    ? toProjectAbsolutePath(projectFolder, rawTake.screenPath)
+    : (rawTake.screenPath || null)
+  const cameraPath = projectFolder
+    ? toProjectAbsolutePath(projectFolder, rawTake.cameraPath)
+    : (rawTake.cameraPath || null)
+  const recordedDuration = Number(rawTake.recordedDuration)
+  const sections = normalizeSections(rawTake.sections)
+  const trimSegments = Array.isArray(rawTake.trimSegments)
+    ? rawTake.trimSegments
+      .map((segment) => {
+        const start = Number(segment?.start)
+        const end = Number(segment?.end)
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
+        return {
+          start,
+          end,
+          text: typeof segment?.text === 'string' ? segment.text.trim() : ''
+        }
+      })
+      .filter(Boolean)
+    : []
+
+  if (!screenPath || !fs.existsSync(screenPath)) return null
+  if (cameraPath && !fs.existsSync(cameraPath)) return null
+
+  return {
+    id: typeof rawTake.id === 'string' && rawTake.id ? rawTake.id : `recovery-${Date.now()}`,
+    createdAt: typeof rawTake.createdAt === 'string' ? rawTake.createdAt : new Date().toISOString(),
+    screenPath,
+    cameraPath,
+    recordedDuration: Number.isFinite(recordedDuration) ? recordedDuration : 0,
+    sections,
+    trimSegments
+  }
+}
+
+function readRecoveryTake(projectFolder) {
+  const filePath = getProjectRecoveryFilePath(projectFolder)
+  const raw = readJsonFile(filePath, null)
+  const normalized = normalizeRecoveryTake(raw, projectFolder)
+  if (!raw) return null
+  if (normalized) return normalized
+  safeUnlink(filePath)
+  return null
+}
+
+function writeRecoveryTake(projectFolder, rawTake) {
+  const normalized = normalizeRecoveryTake(rawTake, projectFolder)
+  if (!normalized) throw new Error('Invalid recovery recording')
+
+  const serializable = {
+    ...normalized,
+    screenPath: toProjectRelativePath(projectFolder, normalized.screenPath),
+    cameraPath: toProjectRelativePath(projectFolder, normalized.cameraPath)
+  }
+  writeJsonFile(getProjectRecoveryFilePath(projectFolder), serializable)
+  return normalized
+}
+
+function clearRecoveryTake(projectFolder) {
+  safeUnlink(getProjectRecoveryFilePath(projectFolder))
+}
+
+function completeRecoveryTake(projectFolder) {
+  const recoveryTake = readRecoveryTake(projectFolder)
+  if (recoveryTake && Array.isArray(recoveryTake.trimSegments) && recoveryTake.trimSegments.length > 0) {
+    safeUnlink(recoveryTake.screenPath)
+    safeUnlink(recoveryTake.cameraPath)
+  }
+  clearRecoveryTake(projectFolder)
 }
 
 function isDirectoryEmpty(folderPath) {
@@ -389,8 +479,9 @@ ipcMain.handle('project-open', async (event, projectFolder) => {
   if (typeof projectFolder !== 'string' || !projectFolder.trim()) throw new Error('Missing project folder')
   const resolvedFolder = path.resolve(projectFolder)
   const project = loadProjectFromDisk(resolvedFolder)
+  const recoveryTake = readRecoveryTake(resolvedFolder)
   touchRecentProject(resolvedFolder)
-  return { projectPath: resolvedFolder, project }
+  return { projectPath: resolvedFolder, project, recoveryTake }
 })
 
 ipcMain.handle('project-save', async (event, payload = {}) => {
@@ -403,6 +494,30 @@ ipcMain.handle('project-save', async (event, payload = {}) => {
   return { projectPath: resolvedFolder, project }
 })
 
+ipcMain.handle('project-set-recovery-take', async (event, payload = {}) => {
+  const projectPath = typeof payload.projectPath === 'string' ? payload.projectPath : ''
+  if (!projectPath) throw new Error('Missing project path')
+  const resolvedFolder = path.resolve(projectPath)
+  ensureDirectory(resolvedFolder)
+  const recoveryTake = writeRecoveryTake(resolvedFolder, payload.take || {})
+  touchRecentProject(resolvedFolder)
+  return { projectPath: resolvedFolder, recoveryTake }
+})
+
+ipcMain.handle('project-clear-recovery-take', async (event, projectFolder) => {
+  if (typeof projectFolder !== 'string' || !projectFolder.trim()) return false
+  const resolvedFolder = path.resolve(projectFolder)
+  clearRecoveryTake(resolvedFolder)
+  return true
+})
+
+ipcMain.handle('project-complete-recovery-take', async (event, projectFolder) => {
+  if (typeof projectFolder !== 'string' || !projectFolder.trim()) return false
+  const resolvedFolder = path.resolve(projectFolder)
+  completeRecoveryTake(resolvedFolder)
+  return true
+})
+
 ipcMain.handle('project-list-recent', async (event, limit = 10) => {
   return listRecentProjects(limit)
 })
@@ -413,8 +528,9 @@ ipcMain.handle('project-load-last', async () => {
   if (!projectFolder || !fs.existsSync(getProjectFilePath(projectFolder))) return null
   try {
     const project = loadProjectFromDisk(projectFolder)
+    const recoveryTake = readRecoveryTake(projectFolder)
     touchRecentProject(projectFolder)
-    return { projectPath: projectFolder, project }
+    return { projectPath: projectFolder, project, recoveryTake }
   } catch (error) {
     console.error(`Failed to load last project at ${projectFolder}:`, error)
     return null
@@ -701,6 +817,79 @@ ipcMain.handle('trim-silence', async (event, opts) => {
   const paddingSeconds = Number.isFinite(Number(opts?.paddingSeconds))
     ? Math.max(0, Number(opts.paddingSeconds))
     : 0.15
+  const cleanupInput = !!opts?.cleanupInput
+  const trimTargets = [
+    screenPath ? { key: 'screenPath', inputPath: screenPath, label: 'screen recording' } : null,
+    cameraPath ? { key: 'cameraPath', inputPath: cameraPath, label: 'camera recording' } : null
+  ].filter(Boolean)
+
+  function getFileSizeBytes(filePath) {
+    try {
+      return fs.statSync(filePath).size
+    } catch (error) {
+      return 0
+    }
+  }
+
+  function getAvailableDiskBytes(folderPath) {
+    try {
+      if (typeof fs.statfsSync !== 'function') return null
+      const stats = fs.statfsSync(folderPath)
+      const blockSize = Number(stats?.bsize)
+      const availableBlocks = Number(stats?.bavail)
+      if (!Number.isFinite(blockSize) || !Number.isFinite(availableBlocks)) return null
+      return blockSize * availableBlocks
+    } catch (error) {
+      return null
+    }
+  }
+
+  function sendTrimProgress(payload) {
+    try {
+      event.sender.send('trim-silence-progress', payload)
+    } catch (error) {
+      console.warn('Failed to send trim progress event:', error)
+    }
+  }
+
+  function clamp01(value) {
+    if (!Number.isFinite(value)) return 0
+    return Math.max(0, Math.min(1, value))
+  }
+
+  function formatPercent(value) {
+    return `${Math.round(clamp01(value) * 100)}%`
+  }
+
+  function formatTrimStatus(fileIndex, fileCount, label, fileProgress) {
+    if (fileCount <= 1) return `Trimming ${label} (${formatPercent(fileProgress)})`
+    return `Trimming ${label} (${fileIndex}/${fileCount}, ${formatPercent(fileProgress)})`
+  }
+
+  function emitOverallTrimProgress(fileIndex, fileProgress, label) {
+    const safeFileCount = Math.max(1, trimTargets.length)
+    const normalizedFileIndex = Math.min(safeFileCount, Math.max(1, fileIndex))
+    const safeFileProgress = clamp01(fileProgress)
+    const overallProgress = ((normalizedFileIndex - 1) + safeFileProgress) / safeFileCount
+    sendTrimProgress({
+      title: 'Trimming silence...',
+      status: formatTrimStatus(normalizedFileIndex, safeFileCount, label, safeFileProgress),
+      progress: overallProgress,
+      fileIndex: normalizedFileIndex,
+      fileCount: safeFileCount,
+      fileProgress: safeFileProgress,
+      label
+    })
+  }
+
+  function parseFfmpegTimeToSeconds(value) {
+    if (typeof value !== 'string' || !value.trim()) return null
+    const parts = value.trim().split(':')
+    if (parts.length !== 3) return null
+    const [hours, minutes, seconds] = parts.map(Number)
+    if (![hours, minutes, seconds].every(Number.isFinite)) return null
+    return (hours * 3600) + (minutes * 60) + seconds
+  }
 
   // Add padding and merge overlapping segments
   const safeSegments = Array.isArray(segments) ? segments : []
@@ -729,6 +918,18 @@ ipcMain.handle('trim-silence', async (event, opts) => {
       last.end = Math.max(last.end, padded[i].end)
     } else {
       merged.push(padded[i])
+    }
+  }
+
+  const availableDiskBytes = getAvailableDiskBytes(outputFolder || path.dirname(screenPath || cameraPath || app.getPath('documents')))
+  if (availableDiskBytes !== null && trimTargets.length > 0) {
+    const largestInputBytes = trimTargets.reduce((maxBytes, target) => {
+      return Math.max(maxBytes, getFileSizeBytes(target.inputPath))
+    }, 0)
+    const safetyBufferBytes = 256 * 1024 * 1024
+    const requiredBytes = largestInputBytes + safetyBufferBytes
+    if (availableDiskBytes < requiredBytes) {
+      throw new Error('Not enough free disk space to trim safely. The recording was kept so it can be recovered.')
     }
   }
 
@@ -776,29 +977,117 @@ ipcMain.handle('trim-silence', async (event, opts) => {
     return parts.join(';')
   }
 
-  function trimFile(inputPath) {
+  function trimFile(inputPath, fileIndex, fileCount, label, targetDuration) {
     const ext = path.extname(inputPath)
     const base = path.basename(inputPath, ext)
-    const outputPath = path.join(outputFolder, `${base}-trimmed${ext}`)
+    const preferredOutputPath = cleanupInput
+      ? inputPath
+      : path.join(outputFolder, `${base}-trimmed${ext}`)
+    const outputPath = path.resolve(preferredOutputPath) === path.resolve(inputPath)
+      ? path.join(outputFolder, `.${base}-trim-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`)
+      : preferredOutputPath
     const filter = buildTrimFilter(merged)
 
     const args = [
       '-i', inputPath,
       '-filter_complex', filter,
       '-map', '[outv]', '-map', '[outa]',
+      '-progress', 'pipe:1',
+      '-nostats',
       '-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0',
       '-c:a', 'libopus',
       '-y', outputPath
     ]
 
     return new Promise((resolve, reject) => {
-      execFile(ffmpegPath, args, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (error) {
-          console.error('FFmpeg trim stderr:', stderr)
-          reject(stderr || error.message)
-        } else {
+      const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true })
+      let stdoutBuffer = ''
+      let stderrBuffer = ''
+      let lastReportedProgress = -1
+      let finalizing = false
+
+      emitOverallTrimProgress(fileIndex, 0, label)
+
+      function maybeReportProgress(progressValue) {
+        const safeProgress = clamp01(progressValue)
+        if (Math.abs(safeProgress - lastReportedProgress) < 0.01 && safeProgress < 1) return
+        lastReportedProgress = safeProgress
+        emitOverallTrimProgress(fileIndex, safeProgress, label)
+      }
+
+      function finalizeSuccess() {
+        if (finalizing) return
+        finalizing = true
+        maybeReportProgress(1)
+
+        try {
+          if (cleanupInput) {
+            safeUnlink(inputPath)
+            fs.renameSync(outputPath, inputPath)
+            resolve(inputPath)
+            return
+          }
+
           resolve(outputPath)
+        } catch (finalizeError) {
+          safeUnlink(outputPath)
+          reject(finalizeError)
         }
+      }
+
+      ffmpeg.stdout.on('data', (chunk) => {
+        stdoutBuffer += String(chunk)
+        const lines = stdoutBuffer.split(/\r?\n/)
+        stdoutBuffer = lines.pop() || ''
+
+        for (const line of lines) {
+          const trimmedLine = line.trim()
+          if (!trimmedLine) continue
+
+          const separatorIndex = trimmedLine.indexOf('=')
+          if (separatorIndex <= 0) continue
+
+          const key = trimmedLine.slice(0, separatorIndex)
+          const value = trimmedLine.slice(separatorIndex + 1)
+
+          if (key === 'out_time') {
+            const seconds = parseFfmpegTimeToSeconds(value)
+            if (seconds !== null && targetDuration > 0) {
+              maybeReportProgress(seconds / targetDuration)
+            }
+          } else if ((key === 'out_time_ms' || key === 'out_time_us') && targetDuration > 0) {
+            const rawValue = Number(value)
+            if (Number.isFinite(rawValue)) {
+              maybeReportProgress((rawValue / 1000000) / targetDuration)
+            }
+          } else if (key === 'progress' && value === 'end') {
+            maybeReportProgress(1)
+          }
+        }
+      })
+
+      ffmpeg.stderr.on('data', (chunk) => {
+        stderrBuffer += String(chunk)
+      })
+
+      ffmpeg.on('error', (error) => {
+        if (finalizing) return
+        finalizing = true
+        safeUnlink(outputPath)
+        reject(error)
+      })
+
+      ffmpeg.on('close', (code) => {
+        if (code !== 0) {
+          if (finalizing) return
+          finalizing = true
+          safeUnlink(outputPath)
+          console.error('FFmpeg trim stderr:', stderrBuffer)
+          reject(stderrBuffer || `ffmpeg exited with code ${code}`)
+          return
+        }
+
+        finalizeSuccess()
       })
     })
   }
@@ -810,16 +1099,22 @@ ipcMain.handle('trim-silence', async (event, opts) => {
     ? remappedSections[remappedSections.length - 1].end
     : 0
 
-  // Run in parallel for screen and camera
-  const promises = []
-  if (screenPath) {
-    promises.push(trimFile(screenPath).then(p => { results.screenPath = p }))
-  }
-  if (cameraPath) {
-    promises.push(trimFile(cameraPath).then(p => { results.cameraPath = p }))
+  for (let i = 0; i < trimTargets.length; i++) {
+    const target = trimTargets[i]
+    results[target.key] = await trimFile(
+      target.inputPath,
+      i + 1,
+      trimTargets.length,
+      target.label,
+      results.trimmedDuration
+    )
   }
 
-  await Promise.all(promises)
+  sendTrimProgress({
+    title: 'Trimming silence...',
+    status: 'Finalizing trimmed clips...',
+    progress: 1
+  })
   return results
 })
 
