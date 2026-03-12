@@ -173,6 +173,35 @@ function getProjectFilePath(projectFolder) {
   return path.join(projectFolder, PROJECT_FILE_NAME)
 }
 
+function isDirectoryEmpty(folderPath) {
+  try {
+    return fs.readdirSync(folderPath).length === 0
+  } catch (error) {
+    return false
+  }
+}
+
+function resolveAvailableProjectFolder(targetFolder) {
+  const resolvedTarget = path.resolve(targetFolder)
+  if (!fs.existsSync(resolvedTarget)) return resolvedTarget
+  if (!fs.statSync(resolvedTarget).isDirectory()) {
+    throw new Error('Project location must be a folder')
+  }
+  if (isDirectoryEmpty(resolvedTarget) && !fs.existsSync(getProjectFilePath(resolvedTarget))) {
+    return resolvedTarget
+  }
+
+  const parentFolder = path.dirname(resolvedTarget)
+  const baseName = path.basename(resolvedTarget)
+  let candidate = resolvedTarget
+  let suffix = 2
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(parentFolder, `${baseName} ${suffix}`)
+    suffix += 1
+  }
+  return candidate
+}
+
 function saveProjectToDisk(projectFolder, rawProject) {
   const normalized = normalizeProjectData(rawProject, projectFolder)
   normalized.updatedAt = new Date().toISOString()
@@ -262,6 +291,9 @@ function createWindow() {
   })
 
   win.setContentProtection(true)
+  win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    console.log(`[renderer:${level}] ${message} (${sourceId}:${line})`)
+  })
   win.loadFile(path.join(__dirname, 'index.html'))
 }
 
@@ -300,13 +332,14 @@ ipcMain.handle('pick-project-location', async (event, opts = {}) => {
   const defaultBasePath = app.getPath('documents') || app.getPath('home')
 
   if (process.platform === 'win32') {
-    const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: 'Create Project',
-      buttonLabel: 'Create Project',
-      defaultPath: path.join(defaultBasePath, projectName)
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: `Choose where to create "${projectName}"`,
+      buttonLabel: 'Create Project Here',
+      defaultPath: defaultBasePath,
+      properties: ['openDirectory']
     })
-    if (canceled || !filePath) return null
-    return filePath
+    if (canceled || !filePaths.length) return null
+    return path.join(filePaths[0], projectName)
   }
 
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
@@ -332,18 +365,14 @@ ipcMain.handle('project-create', async (event, opts = {}) => {
     targetFolder = path.resolve(explicitProjectPath)
     const parentFolder = path.dirname(targetFolder)
     ensureDirectory(parentFolder)
+    targetFolder = resolveAvailableProjectFolder(targetFolder)
   } else {
     const parentFolder = typeof opts.parentFolder === 'string' ? opts.parentFolder : ''
     if (!parentFolder) throw new Error('Missing parent folder')
     const resolvedParent = path.resolve(parentFolder)
     ensureDirectory(resolvedParent)
 
-    targetFolder = path.join(resolvedParent, baseName)
-    let suffix = 2
-    while (fs.existsSync(targetFolder)) {
-      targetFolder = path.join(resolvedParent, `${baseName} ${suffix}`)
-      suffix += 1
-    }
+    targetFolder = resolveAvailableProjectFolder(path.join(resolvedParent, baseName))
   }
 
   if (fs.existsSync(targetFolder) && !fs.statSync(targetFolder).isDirectory()) {

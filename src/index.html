@@ -19,8 +19,8 @@
 
       <div class="flex gap-2">
         <input id="newProjectName" type="text" placeholder="Project name" class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
-        <button id="createProjectBtn" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium transition-colors">Create</button>
-        <button id="openProjectBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Open Folder</button>
+        <button id="createProjectBtn" type="button" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium transition-colors">Create</button>
+        <button id="openProjectBtn" type="button" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Open Folder</button>
       </div>
 
       <div class="text-xs text-gray-500">Create asks where to store the new project folder, then the app creates it for you.</div>
@@ -279,6 +279,7 @@
     let hideFromRecording = 'true';
     let activeProjectPath = '';
     let activeProject = null;
+    let activeProjectSession = 0;
     let activeWorkspaceView = 'home';
     let saveDebounceTimer = null;
     let persistQueue = Promise.resolve();
@@ -294,7 +295,7 @@
 
     const CANVAS_W = 1920;
     const CANVAS_H = 1080;
-    const PIP_FRACTION = 0.25;
+    const PIP_FRACTION = 0.28;
     const PIP_MARGIN = 40;
     const PIP_SIZE = Math.round(CANVAS_W * PIP_FRACTION);
 
@@ -327,6 +328,19 @@
 
     function roundMs(value) {
       return Number(value.toFixed(3));
+    }
+
+    function getActiveProjectSession() {
+      return {
+        id: activeProjectSession,
+        projectPath: activeProjectPath
+      };
+    }
+
+    function matchesActiveProjectSession(session) {
+      return !!session
+        && session.id === activeProjectSession
+        && session.projectPath === activeProjectPath;
     }
 
     function normalizeTranscriptText(value) {
@@ -431,22 +445,23 @@
 
     async function persistProjectNow() {
       if (!activeProjectPath || !activeProject) return;
+      const expectedProjectPath = activeProjectPath;
       const payload = buildProjectSavePayload();
       if (!payload) return;
 
       persistQueue = persistQueue.then(async () => {
         const result = await window.electronAPI.projectSave({
-          projectPath: activeProjectPath,
+          projectPath: expectedProjectPath,
           project: payload
         });
-        if (result?.projectPath && result?.project) {
+        if (result?.projectPath && result?.project && activeProjectPath === expectedProjectPath) {
           activeProjectPath = result.projectPath;
           activeProject = result.project;
           saveFolder = activeProjectPath;
           folderPathEl.textContent = activeProjectPath;
           openFolderBtn.classList.toggle('hidden', !activeProjectPath);
           updateWorkspaceHeader();
-          await window.electronAPI.projectSetLast(activeProjectPath);
+          await window.electronAPI.projectSetLast(expectedProjectPath);
         }
       }).catch((error) => {
         console.error('Failed to persist project:', error);
@@ -479,6 +494,9 @@
         cancelAnimationFrame(editorDrawRAF);
         editorDrawRAF = null;
       }
+
+      editorScreenVideo.onloadedmetadata = null;
+      editorCameraVideo.onloadedmetadata = null;
 
       if (editorState) {
         if (editorState.screenBlobUrl && editorState.screenBlobUrl.startsWith('blob:')) URL.revokeObjectURL(editorState.screenBlobUrl);
@@ -569,6 +587,7 @@
 
       await flushScheduledProjectSave();
       clearEditorState();
+      activeProjectSession += 1;
 
       activeProjectPath = projectPath;
       activeProject = project;
@@ -846,8 +865,41 @@
         anchor.cameraFullscreen = currentAnchor.cameraFullscreen;
       }
 
-      renderKeyframeMarkers();
-      drawEditorFrame();
+      renderSectionMarkers();
+      editorSeek(editorState.currentTime);
+      updateEditorTimeDisplay();
+      scheduleProjectSave();
+    }
+
+    function deleteNearestKeyframe() {
+      if (!editorState || !Array.isArray(editorState.keyframes)) return;
+
+      const manualKeyframes = editorState.keyframes.filter(kf => !kf.sectionId);
+      if (manualKeyframes.length === 0) return;
+
+      const currentTime = Number(editorState.currentTime) || 0;
+      let nearest = manualKeyframes[0];
+      let nearestDistance = Math.abs((Number(nearest.time) || 0) - currentTime);
+
+      for (let i = 1; i < manualKeyframes.length; i++) {
+        const candidate = manualKeyframes[i];
+        const distance = Math.abs((Number(candidate.time) || 0) - currentTime);
+        if (distance < nearestDistance) {
+          nearest = candidate;
+          nearestDistance = distance;
+        }
+      }
+
+      const nearestTime = Number(nearest.time) || 0;
+      editorState.keyframes = editorState.keyframes.filter((kf) => {
+        if (kf.sectionId) return true;
+        const time = Number(kf.time) || 0;
+        return time !== nearestTime;
+      });
+
+      renderSectionMarkers();
+      editorSeek(currentTime);
+      updateEditorTimeDisplay();
       scheduleProjectSave();
     }
 
@@ -1049,6 +1101,7 @@
 
     async function applyEdgeTrim(dragState) {
       if (!editorState || editorState.rendering) return;
+      const projectSession = getActiveProjectSession();
       const previousState = {
         sections: editorState.sections.map(s => ({ ...s })),
         keyframes: editorState.keyframes.map(kf => ({ ...kf })),
@@ -1074,6 +1127,7 @@
           outputFolder: saveFolder,
           paddingSeconds: 0
         });
+        if (!matchesActiveProjectSession(projectSession)) return;
 
         const remappedSections = normalizeSections(
           Array.isArray(trimmed?.sections) ? trimmed.sections : [],
@@ -1336,9 +1390,20 @@
       if (!deviceId) return;
 
       cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 }, aspectRatio: { ideal: 16 / 9 } },
+        video: {
+          deviceId: { exact: deviceId },
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 },
+          frameRate: { ideal: 30, max: 30 },
+          aspectRatio: { ideal: 16 / 9 }
+        },
         audio: false
       });
+      const [cameraTrack] = cameraStream.getVideoTracks();
+      if (cameraTrack && 'contentHint' in cameraTrack) {
+        cameraTrack.contentHint = 'detail';
+        console.log(`Camera track settings: ${JSON.stringify(cameraTrack.getSettings?.() || {})}`);
+      }
       cameraVideo.srcObject = cameraStream;
     }
 
@@ -1467,8 +1532,8 @@
       if (supportedRecorderMimeType !== undefined) return supportedRecorderMimeType;
 
       const candidates = [
-        'video/webm; codecs=vp9',
         'video/webm; codecs=vp8',
+        'video/webm; codecs=vp9',
         'video/webm'
       ];
 
@@ -1479,12 +1544,24 @@
       return supportedRecorderMimeType;
     }
 
+    function getRecorderOptions(suffix) {
+      const mimeType = getSupportedRecorderMimeType();
+      const options = mimeType ? { mimeType } : {};
+
+      if (suffix === 'camera') {
+        options.videoBitsPerSecond = 10000000;
+        options.audioBitsPerSecond = 192000;
+      } else if (suffix === 'screen') {
+        options.videoBitsPerSecond = 12000000;
+        options.audioBitsPerSecond = 192000;
+      }
+
+      return options;
+    }
+
     function createRecorder(stream, suffix) {
       const chunks = [];
-      const mimeType = getSupportedRecorderMimeType();
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
+      const recorder = new MediaRecorder(stream, getRecorderOptions(suffix));
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunks.push(e.data);
@@ -1845,6 +1922,7 @@
 
     async function deleteSelectedSection() {
       if (!editorState || editorState.rendering) return;
+      const projectSession = getActiveProjectSession();
       const selectedSection = getSelectedSection();
       if (!selectedSection) return;
 
@@ -1911,6 +1989,7 @@
           outputFolder: saveFolder,
           paddingSeconds: 0
         });
+        if (!matchesActiveProjectSession(projectSession)) return;
 
         const remappedSections = normalizeSections(
           Array.isArray(trimmed?.sections) ? trimmed.sections : [],
@@ -1974,11 +2053,13 @@
       }
     }
 
-    async function appendTakeToTimeline({ screenPath, cameraPath, recordedDuration, trimSections }) {
+    async function appendTakeToTimeline({ screenPath, cameraPath, recordedDuration, trimSections, projectSession }) {
       const takeSections = normalizeTakeSections(trimSections, recordedDuration);
       const takeDuration = takeSections.length > 0
         ? takeSections[takeSections.length - 1].end
         : Math.max(0, Number(recordedDuration) || 0);
+
+      if (!matchesActiveProjectSession(projectSession)) return null;
 
       if (!editorState) {
         enterEditor(
@@ -2019,6 +2100,7 @@
         keepCamera = true;
         timelineCameraPath = editorState.cameraPath;
       }
+      if (!matchesActiveProjectSession(projectSession)) return null;
 
       const startIndex = existingSections.length;
       const appendedSections = takeSections.map((section, idx) => {
@@ -2080,6 +2162,7 @@
     }
 
     async function stopRecording() {
+      const projectSession = getActiveProjectSession();
       const recordedDuration = (Date.now() - startTime) / 1000;
       clearInterval(timerInterval);
 
@@ -2159,6 +2242,7 @@
             trimSections = Array.isArray(trimmed.sections) && trimmed.sections.length > 0
               ? attachSectionTranscripts(trimmed.sections, fallbackSections)
               : fallbackSections;
+            if (!matchesActiveProjectSession(projectSession)) return;
             if (!trimmed.sections || trimmed.sections.length === 0) {
               console.warn('Trim metadata missing from main process; using renderer-derived sections.');
             }
@@ -2178,8 +2262,10 @@
             screenPath,
             cameraPath,
             recordedDuration,
-            trimSections: sectionsForTimeline
+            trimSections: sectionsForTimeline,
+            projectSession
           });
+          if (!appendResult || !matchesActiveProjectSession(projectSession)) return;
 
           if (activeProject) {
             if (!Array.isArray(activeProject.takes)) activeProject.takes = [];
@@ -2826,12 +2912,17 @@
       }
     }
 
+    projectHomeView.addEventListener('click', (event) => {
+      const target = event.target?.id || event.target?.tagName || 'unknown';
+      console.log('project-home-click', target);
+    }, true);
+
     createProjectBtn.addEventListener('click', async () => {
       const name = (newProjectNameInput.value || '').trim() || 'Untitled Project';
-      clearProjectHomeMessage();
-      const projectPath = await window.electronAPI.pickProjectLocation({ name });
-      if (!projectPath) return;
+      showProjectHomeMessage('Opening folder picker...', 'info');
       try {
+        const projectPath = await window.electronAPI.pickProjectLocation({ name });
+        if (!projectPath) return;
         const created = await window.electronAPI.projectCreate({ projectPath, name });
         if (!created?.projectPath || !created?.project) return;
         newProjectNameInput.value = '';
@@ -2845,13 +2936,18 @@
     });
 
     openProjectBtn.addEventListener('click', async () => {
-      clearProjectHomeMessage();
-      const folder = await window.electronAPI.pickFolder({
-        title: 'Open Project Folder',
-        buttonLabel: 'Open Project'
-      });
-      if (!folder) return;
-      await openProjectByPath(folder, 'timeline');
+      showProjectHomeMessage('Opening folder picker...', 'info');
+      try {
+        const folder = await window.electronAPI.pickFolder({
+          title: 'Open Project Folder',
+          buttonLabel: 'Open Project'
+        });
+        if (!folder) return;
+        await openProjectByPath(folder, 'timeline');
+      } catch (error) {
+        console.error('Failed to choose project folder:', error);
+        showProjectHomeMessage(error?.message || 'Failed to choose project folder.');
+      }
     });
 
     resumeLastBtn.addEventListener('click', async () => {
