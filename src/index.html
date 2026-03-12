@@ -142,6 +142,9 @@
         Settings
       </button>
     </div>
+    <div class="text-[11px] text-neutral-600 text-center">
+      <span class="text-neutral-500">⌫</span> toggle segment deletion · <span class="text-neutral-500">Esc</span> deselect
+    </div>
 
     <!-- Settings panel -->
     <div id="settingsPanel" class="hidden bg-neutral-900 border border-neutral-800 rounded-xl p-4 space-y-4">
@@ -186,11 +189,15 @@
 
     <!-- Playback controls -->
     <div class="flex items-center justify-center gap-2">
-      <button id="editorPlayBtn" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Play</button>
-      <button id="editorToggleCamBtn" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Camera</button>
-      <button id="editorCamFullBtn" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Fullscreen</button>
+      <button id="editorPlayBtn" title="Space" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Play</button>
+      <button id="editorSplitBtn" title="S" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Split</button>
+      <button id="editorToggleCamBtn" title="C" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Camera</button>
+      <button id="editorCamFullBtn" title="F" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Fullscreen</button>
       <div class="w-px h-5 bg-neutral-800 mx-1"></div>
       <button id="editorApplyFutureBtn" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Apply to Future</button>
+    </div>
+    <div class="text-[11px] text-neutral-600 text-center">
+      <span class="text-neutral-500">Space</span> play · <span class="text-neutral-500">S</span> split · <span class="text-neutral-500">C</span> camera · <span class="text-neutral-500">F</span> fullscreen · <span class="text-neutral-500">← →</span> seek · <span class="text-neutral-500">⌫</span> delete section · drag camera to reposition
     </div>
 
     <!-- Timeline scrubber -->
@@ -265,6 +272,7 @@
     const editorCtx = editorCanvas.getContext('2d');
     const editorBackBtn = document.getElementById('editorBackBtn');
     const editorPlayBtn = document.getElementById('editorPlayBtn');
+    const editorSplitBtn = document.getElementById('editorSplitBtn');
     const editorToggleCamBtn = document.getElementById('editorToggleCamBtn');
     const editorCamFullBtn = document.getElementById('editorCamFullBtn');
     const editorApplyFutureBtn = document.getElementById('editorApplyFutureBtn');
@@ -2174,6 +2182,82 @@
       scheduleProjectSave();
     }
 
+    function splitSectionAtPlayhead() {
+      if (!editorState || editorState.rendering) return;
+
+      const time = editorState.currentTime;
+      const section = findSectionForTime(time);
+      if (!section) return;
+
+      const MIN_DURATION = 0.1;
+      const offsetInSection = time - section.start;
+      const sourceTime = roundMs(section.sourceStart + offsetInSection);
+
+      if (sourceTime - section.sourceStart < MIN_DURATION || section.sourceEnd - sourceTime < MIN_DURATION) return;
+
+      const sectionIndex = editorState.sections.findIndex(s => s.id === section.id);
+      if (sectionIndex < 0) return;
+
+      // Save camera state for all sections by their current position
+      const savedStates = editorState.sections.map(s => {
+        const kf = editorState.keyframes.find(k => k.sectionId === s.id);
+        return kf ? { pipX: kf.pipX, pipY: kf.pipY, pipVisible: kf.pipVisible, cameraFullscreen: kf.cameraFullscreen } : null;
+      });
+
+      const manualKeyframes = editorState.keyframes.filter(kf => !kf.sectionId);
+
+      // Split: modify original in place (becomes left half), insert new right half
+      const rightSection = {
+        id: 'temp', index: 0, label: 'temp',
+        start: 0, end: 0, duration: 0,
+        sourceStart: sourceTime,
+        sourceEnd: section.sourceEnd,
+        takeId: section.takeId,
+        transcript: ''
+      };
+
+      section.sourceEnd = sourceTime;
+      editorState.sections.splice(sectionIndex + 1, 0, rightSection);
+
+      // Re-index all sections
+      for (let i = 0; i < editorState.sections.length; i++) {
+        editorState.sections[i].id = `section-${i + 1}`;
+        editorState.sections[i].index = i;
+        editorState.sections[i].label = `Section ${i + 1}`;
+      }
+
+      recalculateTimelinePositions();
+
+      // Rebuild section anchors preserving correct camera states
+      const newAnchors = editorState.sections.map((s, i) => {
+        let state;
+        if (i <= sectionIndex) {
+          state = savedStates[i];
+        } else if (i === sectionIndex + 1) {
+          state = savedStates[sectionIndex]; // Right half inherits from original
+        } else {
+          state = savedStates[i - 1]; // Shifted by 1
+        }
+        return {
+          time: s.start,
+          pipX: state?.pipX ?? editorState.defaultPipX,
+          pipY: state?.pipY ?? editorState.defaultPipY,
+          pipVisible: state?.pipVisible ?? true,
+          cameraFullscreen: state?.cameraFullscreen ?? false,
+          sectionId: s.id,
+          autoSection: true
+        };
+      });
+
+      editorState.keyframes = [...newAnchors, ...manualKeyframes].sort((a, b) => a.time - b.time);
+      editorState.selectedSectionId = editorState.sections[sectionIndex + 1].id;
+
+      renderSectionMarkers();
+      refreshWaveform();
+      editorSeek(editorState.currentTime);
+      scheduleProjectSave();
+    }
+
     function appendTakeToTimeline({ takeId, screenPath, cameraPath, recordedDuration, trimSections, projectSession }) {
       const takeSections = normalizeTakeSections(trimSections, recordedDuration);
       // Ensure all sections carry the takeId
@@ -2993,6 +3077,7 @@
 
     editorBackBtn.addEventListener('click', exitEditor);
     editorPlayBtn.addEventListener('click', editorTogglePlay);
+    editorSplitBtn.addEventListener('click', splitSectionAtPlayhead);
     editorToggleCamBtn.addEventListener('click', toggleCameraVisibility);
     editorCamFullBtn.addEventListener('click', toggleCameraFullscreen);
     editorApplyFutureBtn.addEventListener('click', applyStyleToFutureSections);
@@ -3013,6 +3098,7 @@
 
       // Disable controls
       editorPlayBtn.disabled = true;
+      editorSplitBtn.disabled = true;
       editorToggleCamBtn.disabled = true;
       editorCamFullBtn.disabled = true;
       editorRenderBtn.disabled = true;
@@ -3060,6 +3146,7 @@
 
       // Re-enable controls
       editorPlayBtn.disabled = false;
+      editorSplitBtn.disabled = false;
       editorToggleCamBtn.disabled = false;
       editorCamFullBtn.disabled = false;
       editorRenderBtn.disabled = false;
@@ -3156,6 +3243,12 @@
       } else if (e.code === 'Backspace' || e.code === 'Delete') {
         e.preventDefault();
         deleteSelectedSection();
+      } else if (e.code === 'KeyS') {
+        e.preventDefault();
+        splitSectionAtPlayhead();
+      } else if (e.code === 'KeyC') {
+        e.preventDefault();
+        toggleCameraVisibility();
       } else if (e.code === 'KeyF') {
         e.preventDefault();
         toggleCameraFullscreen();
