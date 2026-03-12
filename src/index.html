@@ -19,7 +19,7 @@
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23737373' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 32px; }
-    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #404040; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #525252; }
@@ -194,10 +194,12 @@
     </div>
 
     <!-- Timeline scrubber -->
-    <div id="editorTimeline" class="relative bg-neutral-900 rounded-lg h-12 cursor-pointer select-none border border-neutral-800 overflow-hidden">
-      <canvas id="editorWaveformCanvas" class="absolute inset-0 w-full h-full pointer-events-none z-0" style="opacity: 0.4"></canvas>
-      <div id="editorSectionMarkers" class="absolute inset-0 z-1"></div>
-      <div id="editorScrubber" class="absolute top-0 bottom-0 w-0.5 bg-white pointer-events-none z-20" style="left: 0%"></div>
+    <div id="editorTimelineWrapper" class="rounded-lg border border-neutral-800 overflow-x-auto overflow-y-hidden">
+      <div id="editorTimeline" class="relative bg-neutral-900 h-12 cursor-pointer select-none overflow-hidden" style="min-width: 100%">
+        <canvas id="editorWaveformCanvas" class="absolute inset-0 w-full h-full pointer-events-none z-0" style="opacity: 0.4"></canvas>
+        <div id="editorSectionMarkers" class="absolute inset-0 z-1"></div>
+        <div id="editorScrubber" class="absolute top-0 bottom-0 w-0.5 bg-white pointer-events-none z-20" style="left: 0%"></div>
+      </div>
     </div>
     <div id="editorSectionTranscriptList" class="max-h-40 overflow-y-auto space-y-1.5 bg-neutral-950/50 border border-neutral-800 rounded-xl p-2">
       <div class="text-xs text-neutral-500 px-1">Section transcript will appear here after trimming.</div>
@@ -268,6 +270,7 @@
     const editorApplyFutureBtn = document.getElementById('editorApplyFutureBtn');
     const editorRenderBtn = document.getElementById('editorRenderBtn');
     const editorTimeEl = document.getElementById('editorTime');
+    const editorTimelineWrapper = document.getElementById('editorTimelineWrapper');
     const editorTimeline = document.getElementById('editorTimeline');
     const editorSectionMarkers = document.getElementById('editorSectionMarkers');
     const editorScrubber = document.getElementById('editorScrubber');
@@ -333,6 +336,7 @@
     let editorDrawRAF = null;
     let draggingPip = false;
     let waveformPeaks = null;
+    let timelineZoom = 1;
     let trimDragState = null;
     let takeAudioBufferCache = new Map(); // takeId -> AudioBuffer
     let takeVideoPool = new Map(); // takeId -> { screen: HTMLVideoElement, camera: HTMLVideoElement|null }
@@ -1061,7 +1065,7 @@
 
     function refreshWaveform() {
       if (!editorState) return;
-      waveformPeaks = computeWaveformPeaksFromCache();
+      waveformPeaks = computeWaveformPeaksFromCache(Math.round(800 * timelineZoom));
       renderWaveform();
     }
 
@@ -2347,6 +2351,11 @@
       if (drawRAF) { cancelAnimationFrame(drawRAF); drawRAF = null; }
       if (editorDrawRAF) { cancelAnimationFrame(editorDrawRAF); editorDrawRAF = null; }
 
+      // Reset timeline zoom
+      timelineZoom = 1;
+      editorTimeline.style.minWidth = '100%';
+      editorTimelineWrapper.scrollLeft = 0;
+
       // Clean up previous video pool
       cleanupVideoPool();
 
@@ -2577,6 +2586,7 @@
       if (!editorState || editorState.duration <= 0) return;
       const pct = (editorState.currentTime / editorState.duration) * 100;
       editorScrubber.style.left = pct + '%';
+      if (editorState.playing) scrollTimelineToPlayhead();
     }
 
     function editorDrawLoop() {
@@ -2777,9 +2787,57 @@
       editorSeek(pct * editorState.duration);
     }
 
+    function applyTimelineZoom(newZoom, pivotClientX) {
+      const wrapper = editorTimelineWrapper;
+      const oldZoom = timelineZoom;
+      newZoom = Math.max(1, Math.min(50, newZoom));
+      if (newZoom === oldZoom) return;
+
+      // Compute pivot position as fraction of content
+      const rect = wrapper.getBoundingClientRect();
+      const pivotX = (pivotClientX !== undefined ? pivotClientX : rect.left + rect.width / 2);
+      const pivotFraction = (pivotX - rect.left + wrapper.scrollLeft) / (rect.width * oldZoom);
+
+      timelineZoom = newZoom;
+      editorTimeline.style.minWidth = (newZoom * 100) + '%';
+
+      // Recompute waveform with more detail
+      waveformPeaks = computeWaveformPeaksFromCache(Math.round(800 * newZoom));
+      renderWaveform();
+
+      // Adjust scroll so the pivot point stays under the cursor
+      const newContentWidth = rect.width * newZoom;
+      wrapper.scrollLeft = pivotFraction * newContentWidth - (pivotX - rect.left);
+    }
+
+    function scrollTimelineToPlayhead() {
+      if (!editorState || editorState.duration <= 0 || timelineZoom <= 1) return;
+      const wrapper = editorTimelineWrapper;
+      const wrapperWidth = wrapper.clientWidth;
+      const contentWidth = wrapperWidth * timelineZoom;
+      const playheadX = (editorState.currentTime / editorState.duration) * contentWidth;
+      const margin = wrapperWidth * 0.2;
+      if (playheadX < wrapper.scrollLeft + margin) {
+        wrapper.scrollLeft = playheadX - margin;
+      } else if (playheadX > wrapper.scrollLeft + wrapperWidth - margin) {
+        wrapper.scrollLeft = playheadX - wrapperWidth + margin;
+      }
+    }
+
     // ===== Editor button handlers =====
 
-    new ResizeObserver(() => renderWaveform()).observe(editorTimeline);
+    new ResizeObserver(() => renderWaveform()).observe(editorTimelineWrapper);
+
+    editorTimelineWrapper.addEventListener('wheel', (e) => {
+      if (!editorState) return;
+      // Pinch-to-zoom (trackpad) sends ctrlKey with deltaY
+      // Also support Ctrl+scroll wheel
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const factor = 1 - e.deltaY * 0.01;
+        applyTimelineZoom(timelineZoom * factor, e.clientX);
+      }
+    }, { passive: false });
 
     editorBackBtn.addEventListener('click', exitEditor);
     editorPlayBtn.addEventListener('click', editorTogglePlay);
