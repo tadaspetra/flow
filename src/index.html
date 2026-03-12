@@ -334,6 +334,7 @@
     let draggingPip = false;
     let waveformPeaks = null;
     let trimDragState = null;
+    let takeAudioBufferCache = new Map(); // takeId -> AudioBuffer
     let takeVideoPool = new Map(); // takeId -> { screen: HTMLVideoElement, camera: HTMLVideoElement|null }
     let activeTakeId = null;
     let activePlaybackSection = null;
@@ -369,6 +370,7 @@
         }
       }
       takeVideoPool.clear();
+      takeAudioBufferCache.clear();
       activeTakeId = null;
       activePlaybackSection = null;
     }
@@ -1022,14 +1024,54 @@
       }
     }
 
+    function computeWaveformPeaksFromCache(numBuckets = 800) {
+      if (!editorState || !editorState.sections || editorState.sections.length === 0) return null;
+      const totalDuration = editorState.duration;
+      if (totalDuration <= 0) return null;
+
+      const peaks = new Float32Array(numBuckets);
+      for (let bucket = 0; bucket < numBuckets; bucket++) {
+        const bucketStart = (bucket / numBuckets) * totalDuration;
+        const bucketEnd = ((bucket + 1) / numBuckets) * totalDuration;
+        let maxPeak = 0;
+
+        for (const section of editorState.sections) {
+          if (bucketEnd <= section.start || bucketStart >= section.end) continue;
+          const overlapStart = Math.max(bucketStart, section.start);
+          const overlapEnd = Math.min(bucketEnd, section.end);
+          const sourceStart = section.sourceStart + (overlapStart - section.start);
+          const sourceEnd = section.sourceStart + (overlapEnd - section.start);
+
+          const audioBuffer = takeAudioBufferCache.get(section.takeId);
+          if (!audioBuffer) continue;
+          const channelData = audioBuffer.getChannelData(0);
+          const sampleRate = audioBuffer.sampleRate;
+          const startSample = Math.floor(sourceStart * sampleRate);
+          const endSample = Math.min(Math.ceil(sourceEnd * sampleRate), channelData.length);
+
+          for (let j = startSample; j < endSample; j++) {
+            const abs = Math.abs(channelData[j]);
+            if (abs > maxPeak) maxPeak = abs;
+          }
+        }
+        peaks[bucket] = maxPeak;
+      }
+      return peaks;
+    }
+
+    function refreshWaveform() {
+      if (!editorState) return;
+      waveformPeaks = computeWaveformPeaksFromCache();
+      renderWaveform();
+    }
+
     async function extractWaveformPeaks(numBuckets = 800) {
       if (!editorState || !editorState.sections || editorState.sections.length === 0) return null;
 
       try {
-        // Decode audio for each referenced take
-        const takeAudioBuffers = new Map();
+        // Decode and cache audio for each referenced take
         for (const section of editorState.sections) {
-          if (!section.takeId || takeAudioBuffers.has(section.takeId)) continue;
+          if (!section.takeId || takeAudioBufferCache.has(section.takeId)) continue;
           const take = activeProject?.takes?.find(t => t.id === section.takeId);
           if (!take) continue;
           try {
@@ -1038,44 +1080,13 @@
             const arrayBuffer = await response.arrayBuffer();
             const offlineCtx = new OfflineAudioContext(1, 1, 44100);
             const audioBuffer = await offlineCtx.decodeAudioData(arrayBuffer);
-            takeAudioBuffers.set(section.takeId, audioBuffer);
+            takeAudioBufferCache.set(section.takeId, audioBuffer);
           } catch (err) {
             console.warn(`Failed to decode audio for take ${section.takeId}:`, err);
           }
         }
 
-        const totalDuration = editorState.duration;
-        if (totalDuration <= 0) return null;
-        const peaks = new Float32Array(numBuckets);
-
-        for (let bucket = 0; bucket < numBuckets; bucket++) {
-          const bucketStart = (bucket / numBuckets) * totalDuration;
-          const bucketEnd = ((bucket + 1) / numBuckets) * totalDuration;
-          let maxPeak = 0;
-
-          for (const section of editorState.sections) {
-            if (bucketEnd <= section.start || bucketStart >= section.end) continue;
-            const overlapStart = Math.max(bucketStart, section.start);
-            const overlapEnd = Math.min(bucketEnd, section.end);
-            const sourceStart = section.sourceStart + (overlapStart - section.start);
-            const sourceEnd = section.sourceStart + (overlapEnd - section.start);
-
-            const audioBuffer = takeAudioBuffers.get(section.takeId);
-            if (!audioBuffer) continue;
-            const channelData = audioBuffer.getChannelData(0);
-            const sampleRate = audioBuffer.sampleRate;
-            const startSample = Math.floor(sourceStart * sampleRate);
-            const endSample = Math.min(Math.ceil(sourceEnd * sampleRate), channelData.length);
-
-            for (let j = startSample; j < endSample; j++) {
-              const abs = Math.abs(channelData[j]);
-              if (abs > maxPeak) maxPeak = abs;
-            }
-          }
-          peaks[bucket] = maxPeak;
-        }
-
-        return peaks;
+        return computeWaveformPeaksFromCache(numBuckets);
       } catch (err) {
         console.warn('Failed to extract waveform:', err);
         return null;
@@ -1240,6 +1251,7 @@
       recalculateTimelinePositions();
       syncSectionAnchorKeyframes();
       renderSectionMarkers();
+      refreshWaveform();
       editorSeek(section.start);
       scheduleProjectSave();
     }
@@ -2088,6 +2100,7 @@
       editorState.selectedSectionId = nextSelected?.id || null;
 
       renderSectionMarkers();
+      refreshWaveform();
       editorSeek(nextSelected?.start || 0);
       scheduleProjectSave();
     }
