@@ -30,6 +30,74 @@ function ensureDirectory(folderPath) {
   fs.mkdirSync(folderPath, { recursive: true })
 }
 
+const COMMON_FRAME_RATES = [24, 25, 30, 50, 60]
+
+function parseFpsToken(token) {
+  if (typeof token !== 'string') return null
+  const value = token.trim()
+  if (!value) return null
+  if (value.includes('/')) {
+    const [numRaw, denRaw] = value.split('/')
+    const num = Number(numRaw)
+    const den = Number(denRaw)
+    if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) return null
+    return num / den
+  }
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function parseVideoFpsFromProbeOutput(output) {
+  if (typeof output !== 'string' || !output.trim()) return null
+  const patterns = [
+    /,\s*([0-9]+(?:\.[0-9]+)?(?:\/[0-9]+(?:\.[0-9]+)?)?)\s*fps\b/i,
+    /,\s*([0-9]+(?:\.[0-9]+)?(?:\/[0-9]+(?:\.[0-9]+)?)?)\s*tbr\b/i
+  ]
+
+  for (const pattern of patterns) {
+    const match = output.match(pattern)
+    if (!match) continue
+    const fps = parseFpsToken(match[1])
+    if (Number.isFinite(fps) && fps > 0) return fps
+  }
+
+  return null
+}
+
+function probeVideoFpsWithFfmpeg(ffmpegPath, filePath) {
+  return new Promise((resolve) => {
+    execFile(
+      ffmpegPath,
+      ['-hide_banner', '-i', filePath],
+      { maxBuffer: 10 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        const output = `${stdout || ''}\n${stderr || ''}`
+        const fps = parseVideoFpsFromProbeOutput(output)
+        if (error && !fps) {
+          console.warn(`[render-composite] FPS probe failed for ${filePath}:`, error.message)
+        }
+        resolve(fps)
+      }
+    )
+  })
+}
+
+function chooseRenderFps(candidates, hasCamera) {
+  const valid = (Array.isArray(candidates) ? candidates : [])
+    .map(value => Number(value))
+    .filter(value => Number.isFinite(value) && value >= 10 && value <= 120)
+
+  let base = valid.length > 0 ? Math.max(...valid) : 30
+  if (hasCamera) base = Math.min(base, 30)
+
+  let best = COMMON_FRAME_RATES[0]
+  for (const rate of COMMON_FRAME_RATES) {
+    if (Math.abs(rate - base) < Math.abs(best - base)) best = rate
+  }
+
+  return hasCamera ? Math.min(best, 30) : best
+}
+
 function safeUnlink(filePath) {
   if (!filePath) return
   try {
@@ -559,6 +627,7 @@ ipcMain.handle('render-composite', async (event, opts) => {
   }
 
   const hasCamera = keyframes && keyframes.some(kf => kf.pipVisible || kf.cameraFullscreen)
+  const fpsProbePaths = new Set()
 
   // Each section gets its own pair of inputs (screen + optional camera)
   let args = []
@@ -569,14 +638,37 @@ ipcMain.handle('render-composite', async (event, opts) => {
     const take = takeMap.get(section.takeId)
     if (!take) throw new Error(`Take ${section.takeId} not found`)
     args.push('-i', take.screenPath)
+    fpsProbePaths.add(take.screenPath)
     const screenIdx = inputIdx++
     let cameraIdx = -1
     if (hasCamera && take.cameraPath) {
       args.push('-i', take.cameraPath)
+      fpsProbePaths.add(take.cameraPath)
       cameraIdx = inputIdx++
     }
     sectionInputs.push({ screenIdx, cameraIdx })
   }
+
+  const fpsProbeResults = await Promise.all(
+    Array.from(fpsProbePaths).map(async (filePath) => ({
+      filePath,
+      fps: await probeVideoFpsWithFfmpeg(ffmpegPath, filePath)
+    }))
+  )
+  const targetFps = chooseRenderFps(
+    fpsProbeResults.map(result => result.fps),
+    hasCamera
+  )
+
+  console.log(
+    '[render-composite] FPS selection:',
+    fpsProbeResults.map(result => ({
+      file: path.basename(result.filePath),
+      fps: result.fps ? Number(result.fps.toFixed(3)) : null
+    })),
+    'targetFps=',
+    targetFps
+  )
 
   // Build filter complex
   const filterParts = []
@@ -616,8 +708,6 @@ ipcMain.handle('render-composite', async (event, opts) => {
     const overlayFilter = buildFilterComplex(keyframes, pipSize, screenFitMode, sourceWidth, sourceHeight, canvasW, canvasH)
     const adapted = overlayFilter.replace(/\[0:v\]/g, '[screen_raw]').replace(/\[1:v\]/g, '[camera_raw]')
     filterParts.push(adapted)
-
-    args.push('-filter_complex', filterParts.join(';'), '-map', '[out]', '-map', '[audio_out]')
   } else {
     // No camera - just scale assembled screen
     let outW = sourceWidth % 2 === 0 ? sourceWidth : sourceWidth - 1
@@ -629,11 +719,14 @@ ipcMain.handle('render-composite', async (event, opts) => {
     } else {
       filterParts.push(`[screen_raw]scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:'(ow-iw)/2':'(oh-ih)/2':color=black[out]`)
     }
-
-    args.push('-filter_complex', filterParts.join(';'), '-map', '[out]', '-map', '[audio_out]')
   }
 
+  filterParts.push(`[out]fps=fps=${targetFps}:round=near[out_cfr]`)
+  args.push('-filter_complex', filterParts.join(';'), '-map', '[out_cfr]', '-map', '[audio_out]')
+
   args.push(
+    '-r', String(targetFps),
+    '-fps_mode', 'cfr',
     '-c:v', 'libx264', '-crf', '12', '-preset', 'slow',
     '-c:a', 'aac', '-b:a', '192k',
     '-y', outputPath

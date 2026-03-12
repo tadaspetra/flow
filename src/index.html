@@ -325,6 +325,11 @@
     }
     const TRANSITION_DURATION = 0.3;
     const TRIM_PADDING = 0.15;
+    const CAMERA_DRIFT_SOFT_THRESHOLD = 0.015;
+    const CAMERA_DRIFT_HARD_THRESHOLD = 0.18;
+    const CAMERA_DRIFT_LOG_THRESHOLD = 0.08;
+    const CAMERA_DRIFT_LOG_INTERVAL_MS = 1000;
+    const CAMERA_RESYNC_COOLDOWN_MS = 500;
 
     canvas.width = CANVAS_W;
     canvas.height = CANVAS_H;
@@ -334,6 +339,9 @@
     // ===== Editor State =====
     let editorState = null;
     let editorDrawRAF = null;
+    let editorPausedDrawTimer = null;
+    let editorVideoFrameCallbackId = null;
+    let editorVideoFrameHost = null;
     let draggingPip = false;
     let waveformPeaks = null;
     let timelineZoom = 1;
@@ -342,6 +350,8 @@
     let takeVideoPool = new Map(); // takeId -> { screen: HTMLVideoElement, camera: HTMLVideoElement|null }
     let activeTakeId = null;
     let activePlaybackSection = null;
+    let cameraResyncCooldownUntil = 0;
+    let lastCameraDriftLogAt = 0;
 
     function getOrCreateTakeVideos(takeId) {
       if (takeVideoPool.has(takeId)) return takeVideoPool.get(takeId);
@@ -450,6 +460,65 @@
       setToggleButtonState(goTimelineBtn, activeWorkspaceView === 'timeline', !hasProject || !editorState || activeWorkspaceView === 'processing' || recording);
     }
 
+    function hasPendingEditorDraw() {
+      return !!editorDrawRAF || !!editorPausedDrawTimer || editorVideoFrameCallbackId !== null;
+    }
+
+    function cancelEditorDrawLoop() {
+      if (editorDrawRAF) {
+        cancelAnimationFrame(editorDrawRAF);
+        editorDrawRAF = null;
+      }
+      if (editorPausedDrawTimer) {
+        clearTimeout(editorPausedDrawTimer);
+        editorPausedDrawTimer = null;
+      }
+      if (editorVideoFrameHost && editorVideoFrameCallbackId !== null
+          && typeof editorVideoFrameHost.cancelVideoFrameCallback === 'function') {
+        try {
+          editorVideoFrameHost.cancelVideoFrameCallback(editorVideoFrameCallbackId);
+        } catch (error) {
+          // Ignore cancellation races while switching active takes.
+        }
+      }
+      editorVideoFrameCallbackId = null;
+      editorVideoFrameHost = null;
+    }
+
+    function scheduleEditorDrawLoop() {
+      if (!editorState || activeWorkspaceView !== 'timeline') return;
+
+      if (editorState.playing && activeTakeId) {
+        const videos = getOrCreateTakeVideos(activeTakeId);
+        const screen = videos?.screen;
+        if (screen && typeof screen.requestVideoFrameCallback === 'function') {
+          editorVideoFrameHost = screen;
+          editorVideoFrameCallbackId = screen.requestVideoFrameCallback(() => {
+            editorVideoFrameCallbackId = null;
+            editorVideoFrameHost = null;
+            editorDrawLoop();
+          });
+          return;
+        }
+      }
+
+      if (editorState.playing) {
+        editorDrawRAF = requestAnimationFrame(() => {
+          editorDrawRAF = null;
+          editorDrawLoop();
+        });
+        return;
+      }
+
+      editorPausedDrawTimer = setTimeout(() => {
+        editorPausedDrawTimer = null;
+        editorDrawRAF = requestAnimationFrame(() => {
+          editorDrawRAF = null;
+          editorDrawLoop();
+        });
+      }, Math.round(1000 / 24));
+    }
+
     function setWorkspaceView(nextView) {
       activeWorkspaceView = nextView;
       const showHome = nextView === 'home';
@@ -469,11 +538,10 @@
         drawRAF = null;
       }
 
-      if (showTimeline && editorState && !editorDrawRAF) {
+      if (showTimeline && editorState && !hasPendingEditorDraw()) {
         editorDrawLoop();
-      } else if (!showTimeline && editorDrawRAF) {
-        cancelAnimationFrame(editorDrawRAF);
-        editorDrawRAF = null;
+      } else if (!showTimeline && hasPendingEditorDraw()) {
+        cancelEditorDrawLoop();
         if (editorState?.playing) editorPause();
       }
 
@@ -593,10 +661,7 @@
 
     function clearEditorState() {
       editorPause();
-      if (editorDrawRAF) {
-        cancelAnimationFrame(editorDrawRAF);
-        editorDrawRAF = null;
-      }
+      cancelEditorDrawLoop();
 
       cleanupVideoPool();
       editorState = null;
@@ -2349,7 +2414,7 @@
     function enterEditor(rawSections, opts = {}) {
       // Stop live preview while timeline is active.
       if (drawRAF) { cancelAnimationFrame(drawRAF); drawRAF = null; }
-      if (editorDrawRAF) { cancelAnimationFrame(editorDrawRAF); editorDrawRAF = null; }
+      cancelEditorDrawLoop();
 
       // Reset timeline zoom
       timelineZoom = 1;
@@ -2530,14 +2595,103 @@
       editorTimeEl.textContent = `${formatTime(editorState.currentTime)} / ${formatTime(editorState.duration)}${sectionText}`;
     }
 
+    function switchPlaybackSection(nextSection, opts = {}) {
+      if (!editorState || !nextSection) return false;
+      const previousTakeId = activeTakeId;
+      const sameTake = previousTakeId === nextSection.takeId;
+      const nextVideos = getOrCreateTakeVideos(nextSection.takeId);
+      if (!nextVideos) return false;
+
+      const targetSourceTime = Number.isFinite(Number(opts.sourceTime))
+        ? Number(opts.sourceTime)
+        : nextSection.sourceStart;
+      const currentSourceTime = Number(nextVideos.screen.currentTime);
+      const needsSeek = !Number.isFinite(currentSourceTime) || Math.abs(currentSourceTime - targetSourceTime) > 0.01;
+
+      if (!sameTake && previousTakeId) {
+        const previousVideos = getOrCreateTakeVideos(previousTakeId);
+        if (previousVideos) {
+          previousVideos.screen.pause();
+          if (previousVideos.camera) {
+            previousVideos.camera.pause();
+            previousVideos.camera.playbackRate = 1;
+          }
+        }
+      }
+
+      if (needsSeek) {
+        nextVideos.screen.currentTime = targetSourceTime;
+        if (nextVideos.camera) nextVideos.camera.currentTime = targetSourceTime;
+      }
+
+      activeTakeId = nextSection.takeId;
+      activePlaybackSection = nextSection;
+
+      if (opts.logSwitch) {
+        console.debug('[Editor] Section switch', {
+          from: opts.fromSectionId || null,
+          to: nextSection.id,
+          sameTake,
+          seek: needsSeek,
+          reason: opts.reason || 'unknown'
+        });
+      }
+
+      if (opts.resumePlayback) {
+        if (nextVideos.screen.paused) nextVideos.screen.play().catch(() => {});
+        if (editorState.hasCamera && nextVideos.camera && nextVideos.camera.paused) {
+          nextVideos.camera.play().catch(() => {});
+        }
+      }
+
+      return true;
+    }
+
+    function syncCameraPlayback(videos) {
+      if (!editorState?.hasCamera || !videos?.camera) return;
+
+      const drift = videos.screen.currentTime - videos.camera.currentTime;
+      const absDrift = Math.abs(drift);
+      const now = performance.now();
+
+      if (absDrift >= CAMERA_DRIFT_HARD_THRESHOLD && now >= cameraResyncCooldownUntil) {
+        videos.camera.currentTime = videos.screen.currentTime;
+        videos.camera.playbackRate = 1;
+        cameraResyncCooldownUntil = now + CAMERA_RESYNC_COOLDOWN_MS;
+        console.debug('[Editor] Camera hard resync', {
+          drift: Number(drift.toFixed(3)),
+          threshold: CAMERA_DRIFT_HARD_THRESHOLD
+        });
+        return;
+      }
+
+      if (absDrift >= CAMERA_DRIFT_SOFT_THRESHOLD) {
+        const correction = Math.min(0.06, absDrift * 0.5);
+        const targetRate = drift > 0 ? 1 + correction : 1 - correction;
+        const clampedRate = Math.max(0.92, Math.min(1.08, targetRate));
+        if (Math.abs(videos.camera.playbackRate - clampedRate) > 0.004) {
+          videos.camera.playbackRate = clampedRate;
+        }
+        if (absDrift >= CAMERA_DRIFT_LOG_THRESHOLD && now - lastCameraDriftLogAt >= CAMERA_DRIFT_LOG_INTERVAL_MS) {
+          console.debug('[Editor] Camera drift', {
+            drift: Number(drift.toFixed(3)),
+            playbackRate: Number(clampedRate.toFixed(3))
+          });
+          lastCameraDriftLogAt = now;
+        }
+      } else if (Math.abs(videos.camera.playbackRate - 1) > 0.001) {
+        videos.camera.playbackRate = 1;
+      }
+    }
+
     function editorPlay() {
       if (!editorState || editorState.rendering) return;
       editorState.playing = true;
       if (activeTakeId) {
         const videos = getOrCreateTakeVideos(activeTakeId);
         if (videos) {
-          videos.screen.play();
-          if (editorState.hasCamera && videos.camera) videos.camera.play();
+          videos.screen.play().catch(() => {});
+          if (editorState.hasCamera && videos.camera) videos.camera.play().catch(() => {});
         }
       }
       editorPlayBtn.textContent = 'Pause';
@@ -2548,7 +2702,10 @@
       editorState.playing = false;
       for (const [, videos] of takeVideoPool) {
         videos.screen.pause();
-        if (videos.camera) videos.camera.pause();
+        if (videos.camera) {
+          videos.camera.pause();
+          videos.camera.playbackRate = 1;
+        }
       }
       editorPlayBtn.textContent = 'Play';
     }
@@ -2566,21 +2723,15 @@
 
       const resolved = resolveTimeToSource(time);
       if (resolved) {
-        // Pause previous take if switching
-        if (activeTakeId && activeTakeId !== resolved.takeId) {
-          const oldVideos = getOrCreateTakeVideos(activeTakeId);
-          if (oldVideos) {
-            oldVideos.screen.pause();
-            if (oldVideos.camera) oldVideos.camera.pause();
+        switchPlaybackSection(
+          resolved.section,
+          {
+            sourceTime: resolved.sourceTime,
+            resumePlayback: editorState.playing,
+            reason: 'seek',
+            fromSectionId: activePlaybackSection?.id
           }
-        }
-        activeTakeId = resolved.takeId;
-        activePlaybackSection = resolved.section;
-        const videos = getOrCreateTakeVideos(resolved.takeId);
-        if (videos) {
-          videos.screen.currentTime = resolved.sourceTime;
-          if (videos.camera) videos.camera.currentTime = resolved.sourceTime;
-        }
+        );
       }
       updateEditorTimeDisplay();
       updateScrubberPosition();
@@ -2609,33 +2760,27 @@
             const nextSection = editorState.sections[currentIdx + 1];
 
             if (nextSection) {
-              // Pause current take
-              videos.screen.pause();
-              if (videos.camera) videos.camera.pause();
-
-              // Switch to next section
-              const nextVideos = getOrCreateTakeVideos(nextSection.takeId);
-              if (nextVideos) {
-                nextVideos.screen.currentTime = nextSection.sourceStart;
-                if (nextVideos.camera) nextVideos.camera.currentTime = nextSection.sourceStart;
-                nextVideos.screen.play();
-                if (editorState.hasCamera && nextVideos.camera) nextVideos.camera.play();
-                activeTakeId = nextSection.takeId;
-                activePlaybackSection = nextSection;
-              }
+              const fromSectionId = activePlaybackSection?.id;
+              const sameTake = activeTakeId === nextSection.takeId;
+              const contiguousSource = sameTake
+                && Math.abs(sourceTime - nextSection.sourceStart) <= 0.05;
+              switchPlaybackSection(
+                nextSection,
+                {
+                  sourceTime: contiguousSource ? sourceTime : nextSection.sourceStart,
+                  resumePlayback: true,
+                  logSwitch: true,
+                  reason: 'boundary',
+                  fromSectionId
+                }
+              );
             } else {
               // End of timeline
               editorPause();
             }
           }
 
-          // Drift correction for camera
-          if (editorState.hasCamera && videos.camera) {
-            const drift = Math.abs(videos.screen.currentTime - videos.camera.currentTime);
-            if (drift > 0.05) {
-              videos.camera.currentTime = videos.screen.currentTime;
-            }
-          }
+          syncCameraPlayback(videos);
         }
 
         updateEditorTimeDisplay();
@@ -2677,7 +2822,7 @@
         }
       }
 
-      editorDrawRAF = requestAnimationFrame(editorDrawLoop);
+      scheduleEditorDrawLoop();
     }
 
     // ===== Keyframe management =====
