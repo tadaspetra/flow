@@ -178,16 +178,7 @@
     <!-- Top toolbar -->
     <div class="flex items-center gap-3">
       <button id="editorBackBtn" class="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Back</button>
-      <div class="flex items-center justify-center gap-2 flex-1">
-        <button id="editorPlayBtn" title="Space" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Play</button>
-        <button id="editorSplitBtn" title="S" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Split</button>
-        <button id="editorToggleCamBtn" title="C" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Camera</button>
-        <button id="editorCamFullBtn" title="F" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Fullscreen</button>
-        <div class="w-px h-5 bg-neutral-800 mx-1"></div>
-        <button id="editorApplyFutureBtn" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Apply to Future</button>
-        <div class="w-px h-5 bg-neutral-800 mx-1"></div>
-        <span id="editorTime" class="text-sm text-neutral-500 font-mono tabular-nums">00:00 / 00:00</span>
-      </div>
+      <span id="editorTime" class="text-sm text-neutral-500 font-mono flex-1 text-center tabular-nums">00:00 / 00:00</span>
       <button id="editorRenderBtn" class="px-4 py-1.5 bg-white text-neutral-950 hover:bg-neutral-200 rounded-lg text-sm font-medium transition-colors min-w-[80px] text-center">Render</button>
     </div>
 
@@ -212,6 +203,19 @@
             <div id="editorSectionMarkers" class="absolute inset-0 z-1"></div>
             <div id="editorScrubber" class="absolute top-0 bottom-0 w-0.5 bg-white pointer-events-none z-20" style="left: 0%"></div>
           </div>
+        </div>
+
+        <!-- Playback controls -->
+        <div class="flex items-center justify-center gap-2">
+          <button id="editorPlayBtn" title="Space" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Play</button>
+          <button id="editorSplitBtn" title="S" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Split</button>
+          <button id="editorToggleCamBtn" title="C" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Camera</button>
+          <button id="editorCamFullBtn" title="F" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Fullscreen</button>
+          <div class="w-px h-5 bg-neutral-800 mx-1"></div>
+          <button id="editorApplyFutureBtn" class="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Apply to Future</button>
+        </div>
+        <div class="text-[11px] text-neutral-600 text-center">
+          <span class="text-neutral-500">Space</span> play · <span class="text-neutral-500">S</span> split · <span class="text-neutral-500">C</span> camera · <span class="text-neutral-500">F</span> fullscreen · <span class="text-neutral-500">← →</span> seek · <span class="text-neutral-500">⌫</span> delete section · drag camera to reposition
         </div>
       </div>
     </div>
