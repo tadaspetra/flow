@@ -77,91 +77,94 @@
   </div>
 
   <!-- Recording View -->
-  <div id="recordingView" class="hidden flex-1 flex flex-col min-h-0 p-6 gap-4 max-w-4xl mx-auto w-full">
-    <!-- Source selectors -->
-    <div class="flex gap-3">
-      <div class="flex-1">
-        <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">Screen</label>
-        <select id="screenSource" class="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-600 transition-colors"></select>
+  <div id="recordingView" class="hidden flex-1 flex gap-3 p-4 w-full min-h-0">
+    <!-- Left panel: sources, transcript, controls -->
+    <div class="w-56 shrink-0 flex flex-col gap-3 min-h-0">
+      <!-- Source selectors -->
+      <div class="space-y-2">
+        <div>
+          <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1">Screen</label>
+          <select id="screenSource" class="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-600 transition-colors"></select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1">Mode</label>
+          <select id="screenFit" class="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-600 transition-colors">
+            <option value="fill">Fill</option>
+            <option value="fit">Fit</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1">Camera</label>
+          <select id="cameraSource" class="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-600 transition-colors"></select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1">Microphone</label>
+          <select id="audioSource" class="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-600 transition-colors"></select>
+        </div>
       </div>
-      <div>
-        <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">Mode</label>
-        <select id="screenFit" class="bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-600 transition-colors">
-          <option value="fill">Fill</option>
-          <option value="fit">Fit</option>
-        </select>
+
+      <!-- Transcript panel (shown during recording) -->
+      <div id="transcriptPanel" class="hidden flex-1 flex flex-col min-h-0">
+        <div class="flex items-center justify-between px-1 py-1.5">
+          <span class="text-xs font-medium text-neutral-500 uppercase tracking-wider">Transcript</span>
+          <span id="segmentBadge" class="text-xs text-neutral-500 tabular-nums">0 segments</span>
+        </div>
+        <div id="transcriptContent" class="flex-1 overflow-y-auto text-sm leading-relaxed min-h-0">
+        </div>
       </div>
-      <div class="flex-1">
-        <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">Camera</label>
-        <select id="cameraSource" class="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-600 transition-colors"></select>
-      </div>
-      <div class="flex-1">
-        <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">Microphone</label>
-        <select id="audioSource" class="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-600 transition-colors"></select>
+
+      <!-- Settings panel -->
+      <div id="settingsPanel" class="hidden space-y-3">
+        <div class="flex items-center gap-2">
+          <span id="folderPath" class="text-xs truncate flex-1 text-neutral-500">Not set</span>
+          <button id="openFolderBtn" class="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-md text-xs transition-colors hidden">Open</button>
+          <button id="pickFolderBtn" class="hidden px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-md text-xs transition-colors">Browse</button>
+        </div>
+        <label class="flex items-start gap-2 text-xs text-neutral-400 cursor-pointer select-none">
+          <input id="contentProtectionToggle" type="checkbox" class="mt-0.5 rounded border-neutral-700 bg-neutral-800 text-neutral-50 focus:ring-neutral-600" checked>
+          <span>
+            Invisible from recording
+            <span class="block text-neutral-600 mt-0.5">Turn off to capture screenshots of this window.</span>
+          </span>
+        </label>
       </div>
     </div>
 
-    <!-- Preview + Transcript -->
-    <div class="flex-1 flex gap-0 min-h-[360px] overflow-hidden rounded-xl border border-neutral-800">
-      <!-- Transcript panel (shown during recording) -->
-      <div id="transcriptPanel" class="hidden w-64 shrink-0 bg-neutral-900 border-r border-neutral-800 flex flex-col overflow-hidden">
-        <div class="flex items-center justify-between px-3 py-2.5 border-b border-neutral-800">
-          <span class="text-xs font-medium text-neutral-500 uppercase tracking-wider">Transcript</span>
-          <span id="segmentBadge" class="text-xs bg-neutral-800 text-neutral-400 px-2 py-0.5 rounded-full">0 segments</span>
-        </div>
-        <div id="transcriptContent" class="flex-1 overflow-y-auto px-3 py-2 text-sm leading-relaxed">
-        </div>
-      </div>
+    <!-- Right side: preview + controls -->
+    <div class="flex-1 flex flex-col gap-3 min-w-0 min-h-0">
       <!-- Preview -->
-      <div class="flex-1 bg-black overflow-hidden relative flex items-center justify-center">
+      <div class="flex-1 bg-black overflow-hidden relative flex items-center justify-center rounded-xl border border-neutral-800 min-h-0">
         <canvas id="compositeCanvas" class="w-full h-full object-contain"></canvas>
         <div id="noPreview" class="absolute inset-0 flex items-center justify-center text-neutral-600">
           Select a source to start preview
         </div>
       </div>
-    </div>
 
-    <!-- Hidden video elements for feeding the canvas -->
-    <video id="screenVideo" autoplay muted playsinline class="hidden"></video>
-    <video id="cameraVideo" autoplay muted playsinline class="hidden"></video>
+      <!-- Hidden video elements for feeding the canvas -->
+      <video id="screenVideo" autoplay muted playsinline class="hidden"></video>
+      <video id="cameraVideo" autoplay muted playsinline class="hidden"></video>
 
-    <!-- Audio meter -->
-    <div class="flex items-center gap-3">
-      <span class="text-xs font-medium text-neutral-500 uppercase tracking-wider w-10">Mic</span>
-      <div class="flex-1 bg-neutral-900 rounded-full h-2 overflow-hidden">
-        <div id="audioMeter" class="bg-emerald-500 h-full rounded-full transition-all duration-75" style="width: 0%"></div>
-      </div>
-    </div>
-
-    <!-- Controls -->
-    <div class="flex items-center justify-center gap-4">
-      <button id="recordBtn" class="px-6 py-2.5 bg-red-600 hover:bg-red-700 rounded-xl font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-red-600/20" disabled>
-        Record
-      </button>
-      <span id="timer" class="text-sm text-neutral-500 font-mono w-20 tabular-nums">00:00</span>
-      <button id="settingsBtn" class="ml-auto text-neutral-500 hover:text-neutral-300 transition-colors text-sm">
-        Settings
-      </button>
-    </div>
-    <div class="text-[11px] text-neutral-600 text-center">
-      <span class="text-neutral-500">⌫</span> toggle segment deletion · <span class="text-neutral-500">Esc</span> deselect
-    </div>
-
-    <!-- Settings panel -->
-    <div id="settingsPanel" class="hidden bg-neutral-900 border border-neutral-800 rounded-xl p-4 space-y-4">
+      <!-- Audio meter -->
       <div class="flex items-center gap-3">
-        <label class="text-xs font-medium text-neutral-500 uppercase tracking-wider shrink-0">Project</label>
-        <span id="folderPath" class="text-sm truncate flex-1 text-neutral-400">Not set</span>
-        <button id="openFolderBtn" class="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors hidden">Open</button>
-        <button id="pickFolderBtn" class="hidden px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Browse</button>
+        <span class="text-xs font-medium text-neutral-500 uppercase tracking-wider w-10">Mic</span>
+        <div class="flex-1 bg-neutral-900 rounded-full h-2 overflow-hidden">
+          <div id="audioMeter" class="bg-emerald-500 h-full rounded-full transition-all duration-75" style="width: 0%"></div>
+        </div>
       </div>
-      <label class="flex items-start gap-3 text-sm text-neutral-300 cursor-pointer select-none">
-        <input id="contentProtectionToggle" type="checkbox" class="mt-0.5 rounded border-neutral-700 bg-neutral-800 text-neutral-50 focus:ring-neutral-600" checked>
-        <span>
-          Invisible from recording
-          <span class="block text-xs text-neutral-500 mt-0.5">Turn this off when you want to capture screenshots of the app window.</span>
-        </span>
-      </label>
+
+      <!-- Controls -->
+      <div class="flex items-center justify-center gap-4">
+        <button id="recordBtn" class="px-6 py-2.5 bg-red-600 hover:bg-red-700 rounded-xl font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-red-600/20" disabled>
+          Record
+        </button>
+        <span id="timer" class="text-sm text-neutral-500 font-mono w-20 tabular-nums">00:00</span>
+        <button id="settingsBtn" class="ml-auto text-neutral-500 hover:text-neutral-300 transition-colors text-sm">
+          Settings
+        </button>
+      </div>
+      <div class="text-[11px] text-neutral-600 text-center">
+        <span class="text-neutral-500">⌫</span> toggle segment deletion · <span class="text-neutral-500">Esc</span> deselect
+      </div>
     </div>
   </div>
 
