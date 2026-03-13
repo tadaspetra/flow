@@ -71,6 +71,8 @@
         <button id="goRecordingBtn" class="px-3 py-1.5 rounded-md text-sm transition-colors">Recording</button>
         <button id="goTimelineBtn" class="px-3 py-1.5 rounded-md text-sm transition-colors">Timeline</button>
       </div>
+      <button id="recordBtn" class="hidden px-4 py-1.5 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed" disabled>Record</button>
+      <span id="timer" class="hidden text-sm text-neutral-500 font-mono tabular-nums">00:00</span>
       <button id="editorRenderBtn" class="hidden px-4 py-1.5 bg-white text-neutral-950 hover:bg-neutral-200 rounded-lg text-sm font-medium transition-colors min-w-[80px] text-center">Render</button>
       <button id="switchProjectBtn" class="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-sm transition-colors">Projects</button>
     </div>
@@ -113,8 +115,8 @@
         </div>
       </div>
 
-      <!-- Settings panel -->
-      <div id="settingsPanel" class="hidden space-y-3">
+      <!-- Settings -->
+      <div id="settingsPanel" class="space-y-3">
         <div class="flex items-center gap-2">
           <span id="folderPath" class="text-xs truncate flex-1 text-neutral-500">Not set</span>
           <button id="openFolderBtn" class="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-md text-xs transition-colors hidden">Open</button>
@@ -152,16 +154,6 @@
         </div>
       </div>
 
-      <!-- Controls -->
-      <div class="flex items-center justify-center gap-4">
-        <button id="recordBtn" class="px-6 py-2.5 bg-red-600 hover:bg-red-700 rounded-xl font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-red-600/20" disabled>
-          Record
-        </button>
-        <span id="timer" class="text-sm text-neutral-500 font-mono w-20 tabular-nums">00:00</span>
-        <button id="settingsBtn" class="ml-auto text-neutral-500 hover:text-neutral-300 transition-colors text-sm">
-          Settings
-        </button>
-      </div>
       <div class="text-[11px] text-neutral-600 text-center">
         <span class="text-neutral-500">⌫</span> toggle segment deletion · <span class="text-neutral-500">Esc</span> deselect
       </div>
@@ -248,7 +240,6 @@
     const audioMeter = document.getElementById('audioMeter');
     const recordBtn = document.getElementById('recordBtn');
     const timerEl = document.getElementById('timer');
-    const settingsBtn = document.getElementById('settingsBtn');
     const settingsPanel = document.getElementById('settingsPanel');
     const folderPathEl = document.getElementById('folderPath');
     const openFolderBtn = document.getElementById('openFolderBtn');
@@ -460,6 +451,8 @@
       workspaceHeader.classList.toggle('hidden', !hasProject || activeWorkspaceView === 'home');
       setToggleButtonState(goRecordingBtn, activeWorkspaceView === 'recording', !hasProject || activeWorkspaceView === 'processing');
       setToggleButtonState(goTimelineBtn, activeWorkspaceView === 'timeline', !hasProject || !editorState || activeWorkspaceView === 'processing' || recording);
+      recordBtn.classList.toggle('hidden', activeWorkspaceView !== 'recording');
+      timerEl.classList.toggle('hidden', activeWorkspaceView !== 'recording');
       editorRenderBtn.classList.toggle('hidden', activeWorkspaceView !== 'timeline');
     }
 
@@ -3290,9 +3283,7 @@
     });
 
     // Settings
-    settingsBtn.addEventListener('click', () => {
-      settingsPanel.classList.toggle('hidden');
-    });
+    // Settings panel is always visible in the left sidebar
 
     openFolderBtn.addEventListener('click', () => {
       if (activeProjectPath) window.electronAPI.openFolder(activeProjectPath);
