@@ -1,7 +1,10 @@
 node_modules
 out
 dist
+coverage
+dist-smoke
 .env
 
 .claude/worktrees/*
 pnpm-lock.yaml
+package-lock.json

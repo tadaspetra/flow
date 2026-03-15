@@ -1,0 +1,8 @@
+node_modules
+dist
+out
+coverage
+playwright-report
+test-results
+tmp
+src/renderer/styles/tailwind.css

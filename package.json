@@ -3,14 +3,32 @@
   "version": "1.0.0",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron ."
+    "build:styles": "tailwindcss -i ./src/renderer/styles/tailwind.input.css -o ./src/renderer/styles/main.css --minify",
+    "start": "npm run build:styles && electron .",
+    "dev": "npm run build:styles && electron .",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:e2e": "node tests/e2e/smoke-electron.test.mjs",
+    "package:smoke": "node scripts/package-smoke.mjs",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run test:e2e && npm run package:smoke"
   },
   "devDependencies": {
-    "electron": "^35.1.2"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": ["electron", "ffmpeg-static"]
+    "@electron/packager": "^19.1.0",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.5.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "electron": "^35.1.2",
+    "eslint": "^10.0.3",
+    "globals": "^17.4.0",
+    "jsdom": "^28.1.0",
+    "prettier": "^3.8.1",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.36.0",
