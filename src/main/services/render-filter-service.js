@@ -19,8 +19,14 @@ function buildPosExpr(keyframes, prop) {
     const t = curr.time;
     const prevFull = prev.cameraFullscreen || false;
     const currFull = curr.cameraFullscreen || false;
+    const prevVisible = prev.pipVisible !== undefined ? prev.pipVisible : true;
+    const currVisible = curr.pipVisible !== undefined ? curr.pipVisible : true;
 
-    if (prevVal !== currVal && !prevFull && !currFull) {
+    if ((prevFull && !currFull) || (!prevVisible && currVisible)) {
+      // Fullscreen→pip or hidden→visible: snap to destination at transition start
+      const tStart = t - TRANSITION_DURATION;
+      expr = `if(gte(t,${tStart.toFixed(3)}),${currVal},${expr})`;
+    } else if (prevVal !== currVal && !prevFull && !currFull) {
       const tStart = t - TRANSITION_DURATION;
       const diff = currVal - prevVal;
       expr = `if(gte(t,${t.toFixed(3)}),${currVal},if(gte(t,${tStart.toFixed(3)}),${prevVal}+${diff}*(t-${tStart.toFixed(3)})/${TRANSITION_DURATION.toFixed(3)},${expr}))`;

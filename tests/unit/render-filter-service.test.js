@@ -40,6 +40,30 @@ describe('main/services/render-filter-service', () => {
     expect(expr).toContain('if(gte(T,0.700)');
   });
 
+  test('buildPosExpr snaps position at transition start for fullscreen→pip', () => {
+    const expr = buildPosExpr(
+      [
+        { time: 0, pipX: 100, cameraFullscreen: true, pipVisible: true },
+        { time: 2, pipX: 200, cameraFullscreen: false, pipVisible: true }
+      ],
+      'pipX'
+    );
+    // Position should snap to destination at tStart (1.700), not at t (2.000)
+    expect(expr).toContain('if(gte(t,1.700),200');
+  });
+
+  test('buildPosExpr snaps position at transition start for hidden→visible', () => {
+    const expr = buildPosExpr(
+      [
+        { time: 0, pipX: 100, cameraFullscreen: false, pipVisible: false },
+        { time: 2, pipX: 200, cameraFullscreen: false, pipVisible: true }
+      ],
+      'pipX'
+    );
+    // Position should snap to destination at tStart (1.700), not at t (2.000)
+    expect(expr).toContain('if(gte(t,1.700),200');
+  });
+
   test('buildFilterComplex returns overlay pipeline string', () => {
     const filter = buildFilterComplex(
       [
