@@ -12,6 +12,15 @@ const electronBin =
     ? path.join(projectRoot, 'node_modules', '.bin', 'electron.cmd')
     : path.join(projectRoot, 'node_modules', '.bin', 'electron');
 
+function getElectronArgs() {
+  const args = ['.'];
+  const isCiLinux = process.platform === 'linux' && process.env.CI;
+  if (isCiLinux) {
+    args.push('--no-sandbox', '--disable-setuid-sandbox');
+  }
+  return args;
+}
+
 function wait(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -19,7 +28,7 @@ function wait(ms) {
 }
 
 async function runSmoke() {
-  const child = spawn(electronBin, ['.'], {
+  const child = spawn(electronBin, getElectronArgs(), {
     cwd: projectRoot,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
