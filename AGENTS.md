@@ -219,3 +219,11 @@ Default to:
 - stricter validation
 - shared domain logic
 - full `npm run check` before completion
+
+## Learned User Preferences
+
+- Prefer compact plans and concise summaries unless more depth is requested.
+
+## Learned Workspace Facts
+
+- Cross-platform behavior matters for this app; avoid macOS-only assumptions in filesystem paths, dialogs, and project workflows.
