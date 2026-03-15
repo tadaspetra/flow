@@ -67,6 +67,8 @@ Before implementing behavior changes:
 - Add unit tests for pure logic.
 - Add integration tests for filesystem, IPC, or service coordination.
 - Add or extend e2e coverage for critical user flows if the change affects runtime behavior.
+- For every user-visible behavior change, add at least one proving test that would fail without the change.
+- Treat "what behavior changed?" as a required design question before coding.
 
 Minimum expectation by change type:
 
@@ -74,6 +76,30 @@ Minimum expectation by change type:
 - Main-process service or IPC change: unit + integration tests
 - Renderer feature change: utility tests and, if behaviorally important, e2e or smoke coverage
 - Release/build/packaging change: verification via packaging smoke and relevant CI updates
+
+## Coverage Policy
+
+Do not chase 100% coverage as a vanity target. Protect confidence instead.
+
+Coverage priorities by layer:
+
+- `src/shared/**`
+  - target very high coverage
+  - new logic should normally ship with direct unit coverage
+- pure modules in `src/main/services/**`
+  - target high coverage
+  - normalization, parsing, validation, section math, FPS selection, ffmpeg filter builders should be directly tested
+- orchestration-heavy main-process code
+  - combine unit coverage with integration coverage
+  - do not rely on line coverage alone
+- renderer runtime glue
+  - prefer behavior tests and smoke/e2e coverage over brittle implementation-detail tests
+
+Use this rule when changing code:
+
+- if logic moved or behavior changed, coverage for that area should stay the same or improve
+- if an agent adds a new branch/edge case, it should usually add a test for that branch
+- do not lower confidence in a critical path while keeping the global coverage number flat
 
 ## Testing Rules
 
@@ -101,6 +127,8 @@ Before finishing a substantive change, run:
 
 - `npm run check`
 
+If `npm run check` is too slow during iteration, run a narrower loop while developing, but do not mark work complete until the full check passes.
+
 ## Build And Runtime Notes
 
 - Start the app with `npm run dev` or `npm start`, not raw `electron .`
@@ -127,6 +155,42 @@ Any change that affects build, packaging, or runtime startup must keep these gre
 - packaging smoke
 
 Update `.github/workflows/ci.yml` if the required validation steps change.
+
+## Agent Completion Checklist
+
+A non-trivial task is not complete until all of the following are true:
+
+- acceptance criteria were identified or updated
+- tests were added or updated for the changed behavior
+- implementation matches the tested behavior
+- no meaningful assertion was weakened just to get green results
+- docs were updated if contributor workflow or product behavior changed
+- `npm run check` passed
+
+Every final handoff from an agent should clearly state:
+
+- what behavior changed
+- what tests were added or updated
+- what commands were run
+- any residual risk or intentionally untested edge case
+
+## Agent Prompting Guidance
+
+When asking an agent to add or change a feature, prefer prompts that explicitly require:
+
+- acceptance criteria first
+- tests first or tests alongside the change
+- code robustness over test weakening
+- `npm run check` before completion
+- a summary of the exact tests added
+
+Bad prompt shape:
+
+- "add this feature and make the tests pass"
+
+Better prompt shape:
+
+- "define the behavior, add the proving tests first, implement the feature, do not weaken tests, run `npm run check`, and report what tests were added"
 
 ## Code Quality Expectations
 
