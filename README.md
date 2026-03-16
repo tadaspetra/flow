@@ -1,12 +1,12 @@
-# Flow
+# loop
 
-Flow is a desktop app for recording screen-based videos, transcribing speech in real time, cutting dead space from the transcript, and turning raw takes into a clean edited MP4.
+loop is a desktop app for recording screen-based videos, transcribing speech in real time, cutting dead space from the transcript, and turning raw takes into a clean edited MP4.
 
 The goal: I want to focus 100% of my time on the the video content and have AI take care of the rest.
 
-Built with Electron, ffmpeg, and ElevenLabs Scribe, Flow keeps the editing loop short: record, trim by speech, adjust the timeline, render.
+Built with Electron, ffmpeg, and ElevenLabs Scribe, loop keeps the editing loop short: record, trim by speech, adjust the timeline, render.
 
-## What Flow Does
+## What loop Does
 
 - Records screen, microphone, and optional camera together.
 - Shows a live composite preview while recording.
@@ -20,7 +20,7 @@ Built with Electron, ffmpeg, and ElevenLabs Scribe, Flow keeps the editing loop 
 
 ## Why It Exists
 
-Most screen recording workflows split recording and editing across different tools. Flow combines them into one app:
+Most screen recording workflows split recording and editing across different tools. loop combines them into one app:
 
 - capture the take
 - review the transcript
@@ -34,9 +34,9 @@ That makes it especially useful for demos, tutorials, walkthroughs, and talking-
 
 1. Create or open a project.
 2. Pick a screen source, camera, and microphone.
-3. Record while Flow builds a live transcript.
+3. Record while loop builds a live transcript.
 4. Remove transcript segments you do not want included.
-5. Let Flow compute timeline sections from speech.
+5. Let loop compute timeline sections from speech.
 6. Refine the result in the timeline editor.
 7. Render the final MP4.
 
@@ -44,7 +44,7 @@ That makes it especially useful for demos, tutorials, walkthroughs, and talking-
 
 ### Speech-first editing
 
-Transcript cleanup is part of the editing flow, not a separate afterthought. Flow uses transcript segments to build the first cut automatically.
+Transcript cleanup is part of the editing flow, not a separate afterthought. loop uses transcript segments to build the first cut automatically.
 
 ### Timeline editing after auto-trim
 
@@ -58,7 +58,7 @@ Automatic section building is just the starting point. You can still:
 
 ### Camera composition controls
 
-Flow supports screen-only output, picture-in-picture camera, and fullscreen camera moments. Camera layout can be changed over time with section keyframes, and the timeline header includes a camera sync offset for delayed capture devices such as HDMI capture dongles.
+loop supports screen-only output, picture-in-picture camera, and fullscreen camera moments. Camera layout can be changed over time with section keyframes, and the timeline header includes a camera sync offset for delayed capture devices such as HDMI capture dongles.
 
 ### Project-based workflow
 
@@ -87,7 +87,7 @@ npm ci
 
 ### Configure environment
 
-Flow needs an ElevenLabs API key to mint realtime Scribe tokens.
+loop needs an ElevenLabs API key to mint realtime Scribe tokens.
 
 ```bash
 cp .env.example .env
@@ -155,7 +155,7 @@ More detailed internal docs:
 
 ## Current Scope
 
-Flow already covers the full capture-to-render loop for transcript-driven screen videos, including:
+loop already covers the full capture-to-render loop for transcript-driven screen videos, including:
 
 - project creation and reopening
 - recent project history
@@ -189,4 +189,4 @@ Licensed under `Apache-2.0`. See `LICENSE`.
 
 ## Status
 
-This project is being prepared for open source release and the repository is moving to `tadaspetra/flow`.
+This project is being prepared for open source release and the repository is moving to `tadaspetra/loop`.
