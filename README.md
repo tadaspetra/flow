@@ -1,4 +1,4 @@
-# loop
+# loop (formerly Flow)
 
 loop is a desktop app for recording screen-based videos, transcribing speech in real time, cutting dead space from the transcript, and turning raw takes into a clean edited MP4.
 
