@@ -37,6 +37,7 @@ import {
     const lastProjectPath = document.getElementById('lastProjectPath');
     const resumeLastBtn = document.getElementById('resumeLastBtn');
     const recentProjectsList = document.getElementById('recentProjectsList');
+    const saveAndCleanBtn = document.getElementById('saveAndCleanBtn');
     const activeProjectNameEl = document.getElementById('activeProjectName');
     const activeProjectPathEl = document.getElementById('activeProjectPath');
     const goRecordingBtn = document.getElementById('goRecordingBtn');
@@ -86,6 +87,15 @@ import {
     const editorBgZoomInput = document.getElementById('editorBgZoomInput');
     const editorBgZoomValue = document.getElementById('editorBgZoomValue');
     const editorApplyFutureBtn = document.getElementById('editorApplyFutureBtn');
+    const editorModeLandscapeBtn = document.getElementById('editorModeLandscape');
+    const editorModeReelBtn = document.getElementById('editorModeReel');
+    const editorPipSizeControl = document.getElementById('editorPipSizeControl');
+    const editorPipSizeInput = document.getElementById('editorPipSizeInput');
+    const editorPipSizeValue = document.getElementById('editorPipSizeValue');
+    const editorCropPresets = document.getElementById('editorCropPresets');
+    const editorCropLeftBtn = document.getElementById('editorCropLeft');
+    const editorCropCenterBtn = document.getElementById('editorCropCenter');
+    const editorCropRightBtn = document.getElementById('editorCropRight');
     const editorTimeEl = document.getElementById('editorTime');
     const editorTimelineWrapper = document.getElementById('editorTimelineWrapper');
     const editorTimeline = document.getElementById('editorTimeline');
@@ -157,26 +167,49 @@ import {
     const PIP_MARGIN = 20;
     const PIP_SIZE = Math.round(CANVAS_W * PIP_FRACTION);
     const MIN_SECTION_ZOOM = 1;
+    const MIN_REEL_SECTION_ZOOM = 0.5;
     const MAX_SECTION_ZOOM = 3;
     const DEFAULT_SECTION_ZOOM = 1;
     const MIN_SECTION_PAN = -1;
     const MAX_SECTION_PAN = 1;
     const EXPORT_AUDIO_PRESET_OFF = 'off';
     const EXPORT_AUDIO_PRESET_COMPRESSED = 'compressed';
+    const REEL_CANVAS_W = Math.round(CANVAS_H * 9 / 16);
+    const REEL_CANVAS_H = CANVAS_H;
+    const MIN_REEL_CROP_X = -1;
+    const MAX_REEL_CROP_X = 1;
+    const DEFAULT_PIP_SCALE = 0.22;
+    const MIN_PIP_SCALE = 0.15;
+    const MAX_PIP_SCALE = 0.50;
+    const MODE_SPECIFIC_PROPS = [
+      'backgroundZoom', 'backgroundPanX', 'backgroundPanY',
+      'pipX', 'pipY', 'pipScale', 'pipVisible', 'cameraFullscreen', 'reelCropX'
+    ];
 
-    function snapToNearestCorner(cursorX, cursorY) {
-      const midX = CANVAS_W / 2;
-      const midY = CANVAS_H / 2;
+    function normalizePipScale(value) {
+      if (value === null || value === undefined) return DEFAULT_PIP_SCALE;
+      const v = Number(value);
+      if (!Number.isFinite(v)) return DEFAULT_PIP_SCALE;
+      return Math.max(MIN_PIP_SCALE, Math.min(MAX_PIP_SCALE, v));
+    }
+
+    function snapToNearestCorner(cursorX, cursorY, effectiveW, effectiveH, pipSize) {
+      const w = effectiveW || CANVAS_W;
+      const h = effectiveH || CANVAS_H;
+      const ps = pipSize || PIP_SIZE;
+      const midX = w / 2;
+      const midY = h / 2;
       return {
-        x: cursorX < midX ? PIP_MARGIN : CANVAS_W - PIP_SIZE - PIP_MARGIN,
-        y: cursorY < midY ? PIP_MARGIN : CANVAS_H - PIP_SIZE - PIP_MARGIN
+        x: cursorX < midX ? PIP_MARGIN : w - ps - PIP_MARGIN,
+        y: cursorY < midY ? PIP_MARGIN : h - ps - PIP_MARGIN
       };
     }
 
     function clampSectionZoom(value) {
+      const minZoom = editorState && editorState.outputMode === 'reel' ? MIN_REEL_SECTION_ZOOM : MIN_SECTION_ZOOM;
       const zoom = Number(value);
       if (!Number.isFinite(zoom)) return DEFAULT_SECTION_ZOOM;
-      return Math.max(MIN_SECTION_ZOOM, Math.min(MAX_SECTION_ZOOM, zoom));
+      return Math.max(minZoom, Math.min(MAX_SECTION_ZOOM, zoom));
     }
 
     function formatSectionZoom(value) {
@@ -187,6 +220,139 @@ import {
       const pan = Number(value);
       if (!Number.isFinite(pan)) return 0;
       return Math.max(MIN_SECTION_PAN, Math.min(MAX_SECTION_PAN, pan));
+    }
+
+    function clampReelCropX(value) {
+      const v = Number(value);
+      if (!Number.isFinite(v)) return 0;
+      return Math.max(MIN_REEL_CROP_X, Math.min(MAX_REEL_CROP_X, v));
+    }
+
+    function getEffectiveCanvasDimensions() {
+      if (!editorState || editorState.outputMode !== 'reel') return { w: CANVAS_W, h: CANVAS_H };
+      return { w: REEL_CANVAS_W, h: REEL_CANVAS_H };
+    }
+
+    function computePipSize(pipScale, effectiveW) {
+      return Math.round(effectiveW * pipScale);
+    }
+
+    function saveModeState(kf, mode) {
+      const slot = {};
+      for (const prop of MODE_SPECIFIC_PROPS) {
+        slot[prop] = kf[prop];
+      }
+      kf[mode === 'reel' ? 'savedReel' : 'savedLandscape'] = slot;
+    }
+
+    function restoreModeState(kf, mode, defaults) {
+      const slotKey = mode === 'reel' ? 'savedReel' : 'savedLandscape';
+      const saved = kf[slotKey];
+      if (saved) {
+        for (const prop of MODE_SPECIFIC_PROPS) {
+          if (prop in saved) kf[prop] = saved[prop];
+        }
+      } else {
+        for (const prop of MODE_SPECIFIC_PROPS) {
+          kf[prop] = defaults[prop];
+        }
+      }
+    }
+
+    function getDefaultModeState(mode) {
+      const w = mode === 'reel' ? REEL_CANVAS_W : CANVAS_W;
+      const h = mode === 'reel' ? REEL_CANVAS_H : CANVAS_H;
+      const ps = DEFAULT_PIP_SCALE;
+      const pipSize = computePipSize(ps, w);
+      return {
+        backgroundZoom: 1,
+        backgroundPanX: 0,
+        backgroundPanY: 0,
+        pipX: w - pipSize - PIP_MARGIN,
+        pipY: h - pipSize - PIP_MARGIN,
+        pipScale: ps,
+        pipVisible: true,
+        cameraFullscreen: false,
+        reelCropX: 0
+      };
+    }
+
+    function getContentWidth(sourceW, sourceH, fitMode) {
+      if (fitMode !== 'fit' || !sourceW || !sourceH) return CANVAS_W;
+      const scale = Math.min(CANVAS_W / sourceW, CANVAS_H / sourceH);
+      return sourceW * scale;
+    }
+
+    function reelCropXToPixelOffset(reelCropX, zoom, contentW) {
+      const cw = contentW || CANVAS_W;
+      const z = Math.min(1, Math.max(0, zoom != null ? zoom : 1));
+      const contentLeft = (CANVAS_W - cw) / 2;
+      const scaledW = cw * z;
+      const scaledLeft = contentLeft + (cw - scaledW) / 2;
+      const maxCropRange = Math.max(0, scaledW - REEL_CANVAS_W);
+      return scaledLeft + ((clampReelCropX(reelCropX) + 1) / 2) * maxCropRange;
+    }
+
+    function setOutputMode(mode) {
+      if (!editorState) return;
+      const newMode = mode === 'reel' ? 'reel' : 'landscape';
+      if (editorState.outputMode === newMode) return;
+      pushUndo();
+
+      const oldMode = editorState.outputMode;
+      const defaults = getDefaultModeState(newMode);
+
+      // Save current mode state, then restore or apply defaults for new mode
+      if (editorState.keyframes) {
+        for (const kf of editorState.keyframes) {
+          saveModeState(kf, oldMode);
+          restoreModeState(kf, newMode, defaults);
+        }
+      }
+
+      editorState.outputMode = newMode;
+
+      const { w, h } = getEffectiveCanvasDimensions();
+      const defaultPs = editorState.pipScale || DEFAULT_PIP_SCALE;
+      editorState.pipSize = computePipSize(defaultPs, w);
+      editorState.defaultPipX = w - editorState.pipSize - PIP_MARGIN;
+      editorState.defaultPipY = h - editorState.pipSize - PIP_MARGIN;
+
+      updateOutputModeUI();
+      scheduleProjectSave();
+    }
+
+    function updateOutputModeUI() {
+      if (!editorModeLandscapeBtn || !editorModeReelBtn) return;
+      const isReel = editorState && editorState.outputMode === 'reel';
+      editorModeLandscapeBtn.className = isReel
+        ? 'px-2.5 py-1 text-xs text-neutral-400 hover:text-neutral-200 transition-colors'
+        : 'px-2.5 py-1 text-xs bg-white text-black transition-colors';
+      editorModeReelBtn.className = isReel
+        ? 'px-2.5 py-1 text-xs bg-white text-black transition-colors'
+        : 'px-2.5 py-1 text-xs text-neutral-400 hover:text-neutral-200 transition-colors';
+      // Show/hide PIP size control when camera is present
+      if (editorPipSizeControl) {
+        const showPipControl = editorState && editorState.hasCamera;
+        editorPipSizeControl.classList.toggle('hidden', !showPipControl);
+        editorPipSizeControl.classList.toggle('flex', !!showPipControl);
+      }
+      if (editorPipSizeInput && editorState) {
+        const selectedSection = getSelectedSection();
+        const sectionAnchor = selectedSection ? getSectionAnchorKeyframe(selectedSection.id, false) : null;
+        const currentPipScale = sectionAnchor ? normalizePipScale(sectionAnchor.pipScale) : (editorState.pipScale || DEFAULT_PIP_SCALE);
+        editorPipSizeInput.value = String(currentPipScale);
+        if (editorPipSizeValue) editorPipSizeValue.textContent = currentPipScale.toFixed(2);
+      }
+      if (editorCropPresets) {
+        editorCropPresets.classList.toggle('hidden', !isReel);
+        editorCropPresets.classList.toggle('flex', !!isReel);
+      }
+      // Update zoom slider range based on mode
+      if (editorBgZoomInput) {
+        editorBgZoomInput.min = isReel ? '0.5' : '1';
+      }
+      updateSectionZoomControls();
     }
 
     function normalizeExportAudioPreset(value) {
@@ -271,6 +437,9 @@ import {
     let activePlaybackSection = null;
     let cameraResyncCooldownUntil = 0;
     let lastCameraDriftLogAt = 0;
+    let draggingCrop = false;
+    let cropDragMoved = false;
+    let cropDragState = null;
     const editorZoomBuffer = document.createElement('canvas');
     editorZoomBuffer.width = CANVAS_W;
     editorZoomBuffer.height = CANVAS_H;
@@ -476,6 +645,7 @@ import {
         return activeProject?.timeline || {
           duration: 0,
           sections: [],
+          savedSections: [],
           keyframes: [],
           selectedSectionId: null,
           hasCamera: false,
@@ -487,12 +657,15 @@ import {
       return {
         duration: Number(editorState.duration) || 0,
         sections: Array.isArray(editorState.sections) ? editorState.sections.map(section => ({ ...section })) : [],
+        savedSections: Array.isArray(editorState.savedSections) ? editorState.savedSections.map(section => ({ ...section })) : [],
         keyframes: Array.isArray(editorState.keyframes)
           ? editorState.keyframes.map(kf => ({
             ...kf,
             backgroundZoom: clampSectionZoom(kf.backgroundZoom),
             backgroundPanX: clampSectionPan(kf.backgroundPanX),
-            backgroundPanY: clampSectionPan(kf.backgroundPanY)
+            backgroundPanY: clampSectionPan(kf.backgroundPanY),
+            reelCropX: clampReelCropX(kf.reelCropX),
+            pipScale: normalizePipScale(kf.pipScale)
           }))
           : [],
         selectedSectionId: editorState.selectedSectionId || null,
@@ -510,7 +683,9 @@ import {
           screenFitMode: screenFitSelect.value || 'fill',
           hideFromRecording: hideFromRecording === 'true',
           exportAudioPreset: normalizeExportAudioPreset(exportAudioPresetSelect.value),
-          cameraSyncOffsetMs: normalizeCameraSyncOffsetMs(cameraSyncOffsetInput.value)
+          cameraSyncOffsetMs: normalizeCameraSyncOffsetMs(cameraSyncOffsetInput.value),
+          outputMode: editorState?.outputMode || 'landscape',
+          pipScale: editorState?.pipScale || DEFAULT_PIP_SCALE
         },
         timeline: getProjectTimelineSnapshot()
       };
@@ -607,23 +782,149 @@ import {
       updateUndoRedoButtons();
     }
 
+    function isTakeReferenced(takeId) {
+      if (!editorState || !takeId) return false;
+      return editorState.sections.some(s => s.takeId === takeId) ||
+        editorState.savedSections.some(s => s.takeId === takeId);
+    }
+
+    async function stageTakeIfUnreferenced(takeId) {
+      if (!takeId || !activeProjectPath || !activeProject) return;
+      if (isTakeReferenced(takeId)) return;
+      const take = activeProject.takes?.find(t => t.id === takeId);
+      if (!take) return;
+      const filePaths = [take.screenPath, take.cameraPath].filter(Boolean);
+      if (filePaths.length > 0) {
+        await window.electronAPI.stageTakeFiles(activeProjectPath, filePaths);
+      }
+    }
+
+    async function unstageTakeById(takeId) {
+      if (!takeId || !activeProjectPath || !activeProject) return;
+      const take = activeProject.takes?.find(t => t.id === takeId);
+      if (!take) return;
+      const fileNames = [take.screenPath, take.cameraPath]
+        .filter(Boolean)
+        .map(p => {
+          const parts = p.split(/[/\\]/);
+          return parts[parts.length - 1];
+        });
+      if (fileNames.length > 0) {
+        await window.electronAPI.unstageTakeFiles(activeProjectPath, fileNames);
+      }
+    }
+
+    async function toggleSectionSaved(sectionId) {
+      if (!editorState) return;
+
+      // Check if it's an active section
+      const activeSection = editorState.sections.find(s => s.id === sectionId);
+      if (activeSection) {
+        pushUndo();
+        activeSection.saved = !activeSection.saved;
+        renderSectionTranscriptList();
+        scheduleProjectSave();
+        return;
+      }
+
+      // Check if it's a saved+removed section — unsaving removes it entirely
+      const savedIndex = editorState.savedSections.findIndex(s => s.id === sectionId);
+      if (savedIndex >= 0) {
+        pushUndo();
+        const removed = editorState.savedSections.splice(savedIndex, 1)[0];
+        await stageTakeIfUnreferenced(removed.takeId);
+        renderSectionTranscriptList();
+        scheduleProjectSave();
+      }
+    }
+
+    async function readdSavedSection(sectionId) {
+      if (!editorState) return;
+      const savedIndex = editorState.savedSections.findIndex(s => s.id === sectionId);
+      if (savedIndex < 0) return;
+
+      pushUndo();
+
+      const section = editorState.savedSections.splice(savedIndex, 1)[0];
+
+      // Insert at the correct time position in active sections.
+      // Use >= so the re-added section goes before any section that was
+      // shifted into the same start time after recalculation.
+      let insertIndex = editorState.sections.length;
+      for (let i = 0; i < editorState.sections.length; i++) {
+        if (editorState.sections[i].start >= section.start) {
+          insertIndex = i;
+          break;
+        }
+      }
+      editorState.sections.splice(insertIndex, 0, section);
+
+      reindexSections(editorState.sections);
+      recalculateTimelinePositions();
+      syncSectionAnchorKeyframes();
+
+      const readdedSection = editorState.sections.find(s => s.id === sectionId);
+      renderSectionTranscriptList();
+      renderSectionMarkers();
+      refreshWaveform();
+      editorSeek(readdedSection?.start ?? 0);
+      scheduleProjectSave();
+    }
+
     function snapshotTimeline() {
       return {
         sections: editorState.sections.map(s => ({ ...s })),
+        savedSections: editorState.savedSections.map(s => ({ ...s })),
         keyframes: editorState.keyframes.map(kf => ({ ...kf })),
         selectedSectionId: editorState.selectedSectionId,
-        duration: editorState.duration
+        duration: editorState.duration,
+        outputMode: editorState.outputMode
       };
     }
 
-    function restoreSnapshot(snapshot) {
+    async function restoreSnapshot(snapshot) {
+      // Capture current take references before restore
+      const beforeTakeIds = new Set();
+      for (const s of editorState.sections) if (s.takeId) beforeTakeIds.add(s.takeId);
+      for (const s of editorState.savedSections) if (s.takeId) beforeTakeIds.add(s.takeId);
+
       editorState.sections = snapshot.sections;
+      editorState.savedSections = snapshot.savedSections || [];
       editorState.keyframes = snapshot.keyframes;
       editorState.selectedSectionId = snapshot.selectedSectionId;
       editorState.duration = snapshot.duration;
+      if (snapshot.outputMode) {
+        editorState.outputMode = snapshot.outputMode;
+        const { w, h } = getEffectiveCanvasDimensions();
+        const defaultPs = editorState.pipScale || DEFAULT_PIP_SCALE;
+        editorState.pipSize = computePipSize(defaultPs, w);
+        editorState.defaultPipX = w - editorState.pipSize - PIP_MARGIN;
+        editorState.defaultPipY = h - editorState.pipSize - PIP_MARGIN;
+        updateOutputModeUI();
+      }
+
+      // Compute take references after restore
+      const afterTakeIds = new Set();
+      for (const s of editorState.sections) if (s.takeId) afterTakeIds.add(s.takeId);
+      for (const s of editorState.savedSections) if (s.takeId) afterTakeIds.add(s.takeId);
+
+      // Stage takes that lost all references (files move to .deleted/)
+      for (const takeId of beforeTakeIds) {
+        if (!afterTakeIds.has(takeId)) {
+          await stageTakeIfUnreferenced(takeId);
+        }
+      }
+      // Unstage takes that regained references (files move back from .deleted/)
+      for (const takeId of afterTakeIds) {
+        if (!beforeTakeIds.has(takeId)) {
+          await unstageTakeById(takeId);
+        }
+      }
+
       recalculateTimelinePositions();
       syncSectionAnchorKeyframes();
       renderSectionMarkers();
+      renderSectionTranscriptList();
       updateSectionZoomControls();
       refreshWaveform();
       editorSeek(Math.min(editorState.currentTime, editorState.duration));
@@ -639,16 +940,16 @@ import {
       updateUndoRedoButtons();
     }
 
-    function editorUndo() {
+    async function editorUndo() {
       if (!editorState || editorState.rendering || undoStack.length === 0) return;
       redoStack.push(snapshotTimeline());
-      restoreSnapshot(undoStack.pop());
+      await restoreSnapshot(undoStack.pop());
     }
 
-    function editorRedo() {
+    async function editorRedo() {
       if (!editorState || editorState.rendering || redoStack.length === 0) return;
       undoStack.push(snapshotTimeline());
-      restoreSnapshot(redoStack.pop());
+      await restoreSnapshot(redoStack.pop());
     }
 
     function updateUndoRedoButtons() {
@@ -730,6 +1031,8 @@ import {
       if (!projectPath || !project) return;
 
       await flushScheduledProjectSave();
+      // Clean up any stale .deleted/ folder from a previous session
+      try { await window.electronAPI.cleanupDeleted(projectPath); } catch (_e) { /* best effort */ }
       clearEditorState();
       activeProjectSession += 1;
 
@@ -750,11 +1053,14 @@ import {
           {
             duration: project.timeline.duration || 0,
             keyframes: project.timeline.keyframes || [],
+            savedSections: project.timeline.savedSections || [],
             selectedSectionId: project.timeline.selectedSectionId || null,
             hasCamera: !!project.timeline.hasCamera,
             sourceWidth: project.timeline.sourceWidth || null,
             sourceHeight: project.timeline.sourceHeight || null,
             cameraSyncOffsetMs: project.settings?.cameraSyncOffsetMs,
+            outputMode: project.settings?.outputMode,
+            pipScale: project.settings?.pipScale,
             initialView: preferredView === 'recording' ? 'recording' : 'timeline'
           }
         );
@@ -830,6 +1136,14 @@ import {
       editorBgZoomInput.disabled = disabled;
       editorBgZoomInput.value = String(zoom);
       editorBgZoomValue.textContent = formatSectionZoom(zoom);
+
+      // Update PIP size slider to reflect current section's pipScale
+      if (editorPipSizeInput && editorState) {
+        const sectionAnchor = selectedSection ? getSectionAnchorKeyframe(selectedSection.id, false) : null;
+        const sectionPipScale = sectionAnchor ? normalizePipScale(sectionAnchor.pipScale) : (editorState.pipScale || DEFAULT_PIP_SCALE);
+        editorPipSizeInput.value = String(sectionPipScale);
+        if (editorPipSizeValue) editorPipSizeValue.textContent = sectionPipScale.toFixed(2);
+      }
     }
 
     function getSectionAnchorKeyframe(sectionId, createIfMissing) {
@@ -851,8 +1165,12 @@ import {
         backgroundZoom: clampSectionZoom(fallback.backgroundZoom),
         backgroundPanX: clampSectionPan(fallback.backgroundPanX),
         backgroundPanY: clampSectionPan(fallback.backgroundPanY),
+        reelCropX: clampReelCropX(fallback.reelCropX),
+        pipScale: normalizePipScale(fallback.pipScale),
         sectionId: section.id,
-        autoSection: true
+        autoSection: true,
+        savedLandscape: null,
+        savedReel: null
       };
       editorState.keyframes.push(anchor);
       editorState.keyframes.sort((a, b) => a.time - b.time);
@@ -881,8 +1199,12 @@ import {
           backgroundZoom: existing ? clampSectionZoom(existing.backgroundZoom) : DEFAULT_SECTION_ZOOM,
           backgroundPanX: existing ? clampSectionPan(existing.backgroundPanX) : 0,
           backgroundPanY: existing ? clampSectionPan(existing.backgroundPanY) : 0,
+          reelCropX: existing ? clampReelCropX(existing.reelCropX) : 0,
+          pipScale: existing ? normalizePipScale(existing.pipScale) : (editorState.pipScale || DEFAULT_PIP_SCALE),
           sectionId: section.id,
-          autoSection: true
+          autoSection: true,
+          savedLandscape: existing?.savedLandscape ? { ...existing.savedLandscape } : null,
+          savedReel: existing?.savedReel ? { ...existing.savedReel } : null
         };
       });
 
@@ -929,6 +1251,10 @@ import {
         anchor.backgroundZoom = clampSectionZoom(currentAnchor.backgroundZoom);
         anchor.backgroundPanX = clampSectionPan(currentAnchor.backgroundPanX);
         anchor.backgroundPanY = clampSectionPan(currentAnchor.backgroundPanY);
+        anchor.reelCropX = clampReelCropX(currentAnchor.reelCropX);
+        anchor.pipScale = normalizePipScale(currentAnchor.pipScale);
+        anchor.savedLandscape = currentAnchor.savedLandscape ? { ...currentAnchor.savedLandscape } : null;
+        anchor.savedReel = currentAnchor.savedReel ? { ...currentAnchor.savedReel } : null;
       }
 
       renderSectionMarkers();
@@ -971,34 +1297,91 @@ import {
     }
 
     function renderSectionTranscriptList() {
-      if (!editorState || !editorState.sections || editorState.sections.length === 0) {
+      const activeSections = editorState?.sections || [];
+      const savedSections = editorState?.savedSections || [];
+
+      if (activeSections.length === 0 && savedSections.length === 0) {
         editorSectionTranscriptList.innerHTML = '<div class="text-xs text-neutral-500 px-1">No sections available.</div>';
         return;
       }
 
+      // Merge active and saved sections sorted by start time
+      const activeItems = activeSections.map(s => ({ section: s, isRemoved: false }));
+      const savedItems = savedSections.map(s => ({ section: s, isRemoved: true }));
+      const allItems = [...activeItems, ...savedItems].sort((a, b) => {
+        const timeDiff = a.section.start - b.section.start;
+        if (timeDiff !== 0) return timeDiff;
+        // Equal start times: saved+removed sections appear before active
+        // (they represent the original position before recalculation shifted others)
+        if (a.isRemoved !== b.isRemoved) return a.isRemoved ? -1 : 1;
+        return 0;
+      });
+
       editorSectionTranscriptList.innerHTML = '';
-      for (const section of editorState.sections) {
-        const selected = section.id === editorState.selectedSectionId;
+      for (const { section, isRemoved } of allItems) {
+        const selected = !isRemoved && section.id === editorState.selectedSectionId;
         const transcript = normalizeTranscriptText(section.transcript);
 
-        const row = document.createElement('button');
-        row.type = 'button';
+        const row = document.createElement('div');
         row.dataset.sectionId = section.id;
-        row.className = `w-full text-left rounded-lg px-3 py-2 transition-all ${selected ? 'bg-neutral-800' : 'hover:bg-neutral-900'}`;
+        row.className = `w-full text-left rounded-lg px-3 py-2 transition-all ${selected ? 'bg-neutral-800' : isRemoved ? '' : 'hover:bg-neutral-900 cursor-pointer'}`;
 
         const meta = document.createElement('div');
-        meta.className = 'text-xs text-neutral-500 font-mono tabular-nums';
-        meta.textContent = `${section.label} (${formatTime(section.start)} - ${formatTime(section.end)})`;
+        meta.className = 'text-xs text-neutral-500 font-mono tabular-nums flex items-center justify-between';
+
+        const metaLabel = document.createElement('span');
+        if (isRemoved) metaLabel.style.opacity = '0.5';
+        metaLabel.textContent = `${section.label} (${formatTime(section.start)} - ${formatTime(section.end)})`;
+        meta.appendChild(metaLabel);
+
+        const metaActions = document.createElement('span');
+        metaActions.className = 'flex items-center gap-1 ml-2';
+
+        // Heart icon (inline SVG for cross-platform consistency)
+        const heartBtn = document.createElement('button');
+        heartBtn.type = 'button';
+        heartBtn.className = 'hover:text-red-400 transition-colors leading-none flex items-center';
+        heartBtn.innerHTML = section.saved
+          ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>'
+          : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+        heartBtn.title = section.saved ? 'Unsave section' : 'Save section';
+        heartBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleSectionSaved(section.id);
+        });
+        metaActions.appendChild(heartBtn);
+
+        // [+] re-add button for saved+removed sections (inline SVG)
+        if (isRemoved) {
+          const readdBtn = document.createElement('button');
+          readdBtn.type = 'button';
+          readdBtn.className = 'hover:text-green-400 transition-colors leading-none flex items-center';
+          readdBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+          readdBtn.title = 'Re-add to timeline';
+          readdBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            readdSavedSection(section.id);
+          });
+          metaActions.appendChild(readdBtn);
+        }
+
+        meta.appendChild(metaActions);
 
         const text = document.createElement('div');
         text.className = `mt-1 text-sm leading-snug ${transcript ? 'text-neutral-300' : 'text-neutral-600 italic'}`;
+        if (isRemoved) text.style.opacity = '0.5';
         text.textContent = transcript || 'No transcript captured for this section.';
 
         row.appendChild(meta);
         row.appendChild(text);
-        row.addEventListener('click', () => {
-          selectEditorSection(section.id);
-        });
+
+        // Only active sections are clickable to select
+        if (!isRemoved) {
+          row.style.cursor = 'pointer';
+          row.addEventListener('click', () => {
+            selectEditorSection(section.id);
+          });
+        }
 
         editorSectionTranscriptList.appendChild(row);
       }
@@ -1253,7 +1636,9 @@ import {
         cameraFullscreen: !!kf.cameraFullscreen,
         backgroundZoom: clampSectionZoom(kf.backgroundZoom),
         backgroundPanX: clampSectionPan(kf.backgroundPanX),
-        backgroundPanY: clampSectionPan(kf.backgroundPanY)
+        backgroundPanY: clampSectionPan(kf.backgroundPanY),
+        reelCropX: clampReelCropX(kf.reelCropX),
+        pipScale: normalizePipScale(kf.pipScale)
       }));
 
       if (minimal.length === 0 || minimal[0].time > 0.0001) {
@@ -1265,7 +1650,9 @@ import {
           cameraFullscreen: false,
           backgroundZoom: DEFAULT_SECTION_ZOOM,
           backgroundPanX: 0,
-          backgroundPanY: 0
+          backgroundPanY: 0,
+          reelCropX: 0,
+          pipScale: editorState.pipScale || DEFAULT_PIP_SCALE
         });
       }
 
@@ -1285,7 +1672,9 @@ import {
           sourceEnd: section.sourceEnd,
           backgroundZoom: clampSectionZoom(anchor?.backgroundZoom),
           backgroundPanX: clampSectionPan(anchor?.backgroundPanX),
-          backgroundPanY: clampSectionPan(anchor?.backgroundPanY)
+          backgroundPanY: clampSectionPan(anchor?.backgroundPanY),
+          reelCropX: clampReelCropX(anchor?.reelCropX),
+          pipScale: normalizePipScale(anchor?.pipScale)
         };
       });
     }
@@ -1549,8 +1938,35 @@ import {
       const zoom = clampSectionZoom(backgroundZoom);
       const drawBase = fitMode === 'fill' ? drawFill : drawFit;
 
-      if (zoom <= 1.0001) {
+      if (zoom <= 1.0001 && zoom >= 0.9999) {
         drawBase(targetCtx, video, 0, 0, CANVAS_W, CANVAS_H);
+        return;
+      }
+
+      if (zoom < 0.9999) {
+        // Zoom-out: draw the full frame at reduced scale, centered vertically.
+        // The reel crop overlay will carve out the 608px strip later.
+        // First draw base content to the buffer at 1:1
+        editorZoomBufferCtx.fillStyle = '#000';
+        editorZoomBufferCtx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+        drawBase(editorZoomBufferCtx, video, 0, 0, CANVAS_W, CANVAS_H);
+
+        // Fill target with black
+        targetCtx.fillStyle = '#000';
+        targetCtx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+        // Draw darkened scaled-to-fill background (the content scaled up to fill, darkened)
+        targetCtx.save();
+        targetCtx.globalAlpha = 0.2;
+        targetCtx.drawImage(editorZoomBuffer, 0, 0, CANVAS_W, CANVAS_H);
+        targetCtx.restore();
+
+        // Draw the sharp content at reduced scale, centered (uniform scale preserves aspect ratio)
+        const scaledW = Math.round(CANVAS_W * zoom);
+        const scaledH = Math.round(CANVAS_H * zoom);
+        const offsetX = Math.round((CANVAS_W - scaledW) / 2);
+        const offsetY = Math.round((CANVAS_H - scaledH) / 2);
+        targetCtx.drawImage(editorZoomBuffer, 0, 0, CANVAS_W, CANVAS_H, offsetX, offsetY, scaledW, scaledH);
         return;
       }
 
@@ -1985,7 +2401,7 @@ import {
         .sort((a, b) => a.time - b.time);
     }
 
-    function deleteSelectedSection() {
+    async function deleteSelectedSection() {
       if (!editorState || editorState.rendering) return;
       const selectedSection = getSelectedSection();
       if (!selectedSection) return;
@@ -1995,10 +2411,17 @@ import {
 
       pushUndo();
 
-      // Remove the section
+      // Remove the section from active timeline
       editorState.sections = editorState.sections.filter(section => section.id !== selectedSection.id);
 
-      if (editorState.sections.length === 0) {
+      // If saved, move to savedSections; otherwise stage take files if unreferenced
+      if (selectedSection.saved) {
+        editorState.savedSections.push({ ...selectedSection });
+      } else {
+        await stageTakeIfUnreferenced(selectedSection.takeId);
+      }
+
+      if (editorState.sections.length === 0 && editorState.savedSections.length === 0) {
         const savedSourceWidth = editorState.sourceWidth || null;
         const savedSourceHeight = editorState.sourceHeight || null;
         clearEditorState();
@@ -2008,6 +2431,7 @@ import {
             timeline: {
               duration: 0,
               sections: [],
+              savedSections: [],
               keyframes: [],
               selectedSectionId: null,
               hasCamera: false,
@@ -2034,12 +2458,21 @@ import {
       recalculateTimelinePositions();
       syncSectionAnchorKeyframes();
 
-      const nextSelected = editorState.sections[Math.min(selectedIndex, editorState.sections.length - 1)] || editorState.sections[0];
-      editorState.selectedSectionId = nextSelected?.id || null;
+      if (editorState.sections.length > 0) {
+        const nextSelected = editorState.sections[Math.min(selectedIndex, editorState.sections.length - 1)] || editorState.sections[0];
+        editorState.selectedSectionId = nextSelected?.id || null;
+        renderSectionMarkers();
+        refreshWaveform();
+        editorSeek(nextSelected?.start || 0);
+      } else {
+        // All active sections deleted but savedSections remain — stay in editor with empty timeline
+        editorState.selectedSectionId = null;
+        editorState.duration = 0;
+        renderSectionMarkers();
+        refreshWaveform();
+      }
 
-      renderSectionMarkers();
-      refreshWaveform();
-      editorSeek(nextSelected?.start || 0);
+      renderSectionTranscriptList();
       scheduleProjectSave();
     }
 
@@ -2069,7 +2502,8 @@ import {
         sourceStart: sourceTime,
         sourceEnd: section.sourceEnd,
         takeId: section.takeId,
-        transcript: ''
+        transcript: '',
+        saved: !!section.saved
       };
 
       section.sourceEnd = sourceTime;
@@ -2371,29 +2805,46 @@ import {
         backgroundZoom: DEFAULT_SECTION_ZOOM,
         backgroundPanX: 0,
         backgroundPanY: 0,
+        reelCropX: 0,
         sectionId: section.id,
         autoSection: true
       }));
 
+      const outputMode = opts.outputMode === 'reel' ? 'reel' : 'landscape';
+      const minZoomForLoad = outputMode === 'reel' ? MIN_REEL_SECTION_ZOOM : MIN_SECTION_ZOOM;
+
       const providedKeyframes = Array.isArray(opts.keyframes) && opts.keyframes.length > 0
         ? opts.keyframes.map(kf => ({
           ...kf,
-          backgroundZoom: clampSectionZoom(kf.backgroundZoom),
+          backgroundZoom: Math.max(minZoomForLoad, Math.min(MAX_SECTION_ZOOM, Number.isFinite(Number(kf.backgroundZoom)) ? Number(kf.backgroundZoom) : DEFAULT_SECTION_ZOOM)),
           backgroundPanX: clampSectionPan(kf.backgroundPanX),
-          backgroundPanY: clampSectionPan(kf.backgroundPanY)
+          backgroundPanY: clampSectionPan(kf.backgroundPanY),
+          reelCropX: clampReelCropX(kf.reelCropX),
+          pipScale: normalizePipScale(kf.pipScale)
         }))
         : null;
       const keyframes = (providedKeyframes || sectionKeyframes).sort((a, b) => a.time - b.time);
+      const pipScale = (() => {
+        const v = Number(opts.pipScale);
+        if (opts.pipScale == null || !Number.isFinite(v)) return DEFAULT_PIP_SCALE;
+        return Math.max(MIN_PIP_SCALE, Math.min(MAX_PIP_SCALE, v));
+      })();
+      const effectiveW = outputMode === 'reel' ? REEL_CANVAS_W : CANVAS_W;
+      const effectiveH = outputMode === 'reel' ? REEL_CANVAS_H : CANVAS_H;
+      const effectivePipSize = computePipSize(pipScale, effectiveW);
+      const effDefaultPipX = effectiveW - effectivePipSize - PIP_MARGIN;
+      const effDefaultPipY = effectiveH - effectivePipSize - PIP_MARGIN;
 
       editorState = {
         duration,
         currentTime: 0,
         playing: false,
-        pipSize: PIP_SIZE,
-        defaultPipX,
-        defaultPipY,
+        pipSize: effectivePipSize,
+        defaultPipX: effDefaultPipX,
+        defaultPipY: effDefaultPipY,
         keyframes,
         sections,
+        savedSections: opts.savedSections || [],
         selectedSectionId: opts.selectedSectionId || sections[0]?.id || null,
         screenFitMode: opts.screenFitMode || screenFitSelect.value,
         rendering: false,
@@ -2402,11 +2853,14 @@ import {
         cameraSyncOffsetMs: normalizeCameraSyncOffsetMs(opts.cameraSyncOffsetMs),
         hasCamera: typeof opts.hasCamera === 'boolean' ? opts.hasCamera : false,
         sourceWidth: opts.sourceWidth || null,
-        sourceHeight: opts.sourceHeight || null
+        sourceHeight: opts.sourceHeight || null,
+        outputMode,
+        pipScale
       };
       screenFitSelect.value = editorState.screenFitMode === 'fit' ? 'fit' : 'fill';
       cameraSyncOffsetInput.value = String(editorState.cameraSyncOffsetMs);
       updateSectionZoomControls();
+      updateOutputModeUI();
 
       // Pre-create video elements for all referenced takes
       const referencedTakeIds = new Set(sections.map(s => s.takeId).filter(Boolean));
@@ -2474,7 +2928,9 @@ import {
         cameraFullscreen: false,
         backgroundZoom: DEFAULT_SECTION_ZOOM,
         backgroundPanX: 0,
-        backgroundPanY: 0
+        backgroundPanY: 0,
+        reelCropX: 0,
+        pipScale: editorState.pipScale || DEFAULT_PIP_SCALE
       };
       const userKfs = editorState.keyframes;
       const kfs = userKfs.length > 0 && userKfs[0].time === 0 ? userKfs : [defaultKf, ...userKfs];
@@ -2499,6 +2955,8 @@ import {
       let backgroundPanY = clampSectionPan(active.backgroundPanY);
       let backgroundFocusX = panToFocusCoord(backgroundZoom, backgroundPanX, 0.5);
       let backgroundFocusY = panToFocusCoord(backgroundZoom, backgroundPanY, 0.5);
+      let reelCropX = clampReelCropX(active.reelCropX);
+      let pipScale = normalizePipScale(active.pipScale);
 
       // Transition toward next keyframe at end of current section
       if (next) {
@@ -2549,6 +3007,16 @@ import {
           backgroundFocusY = backgroundFocusY + (nextFocusY - backgroundFocusY) * t;
           backgroundPanX = focusToPanCoord(backgroundZoom, backgroundFocusX, backgroundPanX);
           backgroundPanY = focusToPanCoord(backgroundZoom, backgroundFocusY, backgroundPanY);
+
+          const nextReelCropX = clampReelCropX(next.reelCropX);
+          if (Math.abs(reelCropX - nextReelCropX) > 0.0001) {
+            reelCropX = reelCropX + (nextReelCropX - reelCropX) * t;
+          }
+
+          const nextPipScale = normalizePipScale(next.pipScale);
+          if (Math.abs(pipScale - nextPipScale) > 0.0001) {
+            pipScale = pipScale + (nextPipScale - pipScale) * t;
+          }
         }
       }
 
@@ -2563,7 +3031,9 @@ import {
         backgroundPanX,
         backgroundPanY,
         backgroundFocusX,
-        backgroundFocusY
+        backgroundFocusY,
+        reelCropX,
+        pipScale
       };
     }
 
@@ -2715,6 +3185,17 @@ import {
         }
       }
       editorPlayBtn.textContent = 'Play';
+      // If a video-frame callback was pending it will never fire now that the
+      // video is paused, so cancel it and restart the draw loop on the paused
+      // timer path so the canvas keeps updating (e.g. during drag operations).
+      if (editorVideoFrameCallbackId !== null && editorVideoFrameHost) {
+        editorVideoFrameHost.cancelVideoFrameCallback(editorVideoFrameCallbackId);
+        editorVideoFrameCallbackId = null;
+        editorVideoFrameHost = null;
+      }
+      if (!hasPendingEditorDraw()) {
+        scheduleEditorDrawLoop();
+      }
     }
 
     function editorTogglePlay() {
@@ -2833,24 +3314,56 @@ import {
         );
       }
 
+      const isReel = editorState.outputMode === 'reel';
+      const editorContentW = isReel ? getContentWidth(editorState.sourceWidth, editorState.sourceHeight, editorState.screenFitMode) : CANVAS_W;
+      const cropPixelX = isReel ? reelCropXToPixelOffset(state.reelCropX, state.backgroundZoom, editorContentW) : 0;
+      const effectiveW = isReel ? REEL_CANVAS_W : CANVAS_W;
+      const currentPipSize = computePipSize(state.pipScale, effectiveW);
+
       if (hasCamera) {
         if (state.camTransition > 0 && state.opacity > 0) {
           editorCtx.save();
           if (state.opacity < 1) editorCtx.globalAlpha = state.opacity;
           const t = easeInOut(state.camTransition);
-          const camX = state.pipX * (1 - t);
-          const camY = state.pipY * (1 - t);
-          const camW = editorState.pipSize + (CANVAS_W - editorState.pipSize) * t;
-          const camH = editorState.pipSize + (CANVAS_H - editorState.pipSize) * t;
+          const fullW = isReel ? REEL_CANVAS_W : CANVAS_W;
+          const fullH = isReel ? REEL_CANVAS_H : CANVAS_H;
+          const drawPipX = isReel ? state.pipX + cropPixelX : state.pipX;
+          const drawPipY = state.pipY;
+          const camX = drawPipX * (1 - t) + (isReel ? cropPixelX : 0) * t;
+          const camY = drawPipY * (1 - t);
+          const camW = currentPipSize + (fullW - currentPipSize) * t;
+          const camH = currentPipSize + (fullH - currentPipSize) * t;
           const camR = 12 * (1 - t);
           drawCameraRect(editorCtx, activeVideos.camera, camX, camY, camW, camH, camR);
           editorCtx.restore();
         } else if (state.opacity > 0) {
           editorCtx.save();
           editorCtx.globalAlpha = state.opacity;
-          drawPip(editorCtx, activeVideos.camera, state.pipX, state.pipY, editorState.pipSize, editorState.pipSize);
+          const drawPipX = isReel ? state.pipX + cropPixelX : state.pipX;
+          drawPip(editorCtx, activeVideos.camera, drawPipX, state.pipY, currentPipSize, currentPipSize);
           editorCtx.restore();
         }
+      }
+
+      // Draw reel crop overlay
+      if (isReel) {
+        editorCtx.save();
+        editorCtx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+        // Left overlay
+        if (cropPixelX > 0) {
+          editorCtx.fillRect(0, 0, cropPixelX, CANVAS_H);
+        }
+        // Right overlay
+        const rightEdge = cropPixelX + REEL_CANVAS_W;
+        if (rightEdge < CANVAS_W) {
+          editorCtx.fillRect(rightEdge, 0, CANVAS_W - rightEdge, CANVAS_H);
+        }
+        // Dashed crop boundary
+        editorCtx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+        editorCtx.lineWidth = 2;
+        editorCtx.setLineDash([8, 6]);
+        editorCtx.strokeRect(cropPixelX, 0, REEL_CANVAS_W, CANVAS_H);
+        editorCtx.restore();
       }
 
       scheduleEditorDrawLoop();
@@ -2954,13 +3467,40 @@ import {
       if (activeSection) selectEditorSection(activeSection.id);
       const { x, y } = canvasToEditorCoords(e.clientX, e.clientY);
       const kf = getStateAtTime(editorState.currentTime);
+      const isReel = editorState.outputMode === 'reel';
+      const mousedownContentW = isReel ? getContentWidth(editorState.sourceWidth, editorState.sourceHeight, editorState.screenFitMode) : CANVAS_W;
+      const cropOffsetX = isReel ? reelCropXToPixelOffset(kf.reelCropX, kf.backgroundZoom, mousedownContentW) : 0;
+
+      // PIP hit-test: in reel mode, PIP coords are relative to crop region
       if (editorState.hasCamera && kf.pipVisible && kf.camTransition <= 0) {
-        const pipW = editorState.pipSize;
-        const pipH = editorState.pipSize;
-        if (x >= kf.pipX && x <= kf.pipX + pipW && y >= kf.pipY && y <= kf.pipY + pipH) {
+        const hitEffW = isReel ? REEL_CANVAS_W : CANVAS_W;
+        const pipW = computePipSize(kf.pipScale, hitEffW);
+        const pipH = pipW;
+        const drawPipX = isReel ? kf.pipX + cropOffsetX : kf.pipX;
+        if (x >= drawPipX && x <= drawPipX + pipW && y >= kf.pipY && y <= kf.pipY + pipH) {
           pipDragMoved = false;
           pushUndo();
           draggingPip = true;
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // Crop region drag: in reel mode, detect mousedown within crop region
+      if (isReel && activeSection) {
+        const cropLeft = cropOffsetX;
+        const cropRight = cropOffsetX + REEL_CANVAS_W;
+        if (x >= cropLeft && x <= cropRight && y >= 0 && y <= CANVAS_H) {
+          cropDragMoved = false;
+          pushUndo();
+          draggingCrop = true;
+          const anchor = getSectionAnchorKeyframe(activeSection.id, true);
+          cropDragState = {
+            sectionId: activeSection.id,
+            startMouseX: x,
+            startCropX: anchor ? clampReelCropX(anchor.reelCropX) : 0,
+            zoom: kf.backgroundZoom || 1
+          };
           e.preventDefault();
           return;
         }
@@ -2983,6 +3523,24 @@ import {
     });
 
     window.addEventListener('mousemove', (e) => {
+      // Crop region drag
+      if (draggingCrop && editorState && cropDragState) {
+        const { x } = canvasToEditorCoords(e.clientX, e.clientY);
+        const deltaX = x - cropDragState.startMouseX;
+        const zoom = cropDragState.zoom || 1;
+        const dragContentW = getContentWidth(editorState.sourceWidth, editorState.sourceHeight, editorState.screenFitMode);
+        const scaledW = dragContentW * Math.min(1, zoom);
+        const maxCropRange = Math.max(0, scaledW - REEL_CANVAS_W);
+        const deltaCropX = maxCropRange > 0 ? (deltaX / maxCropRange) * 2 : 0;
+        const newCropX = clampReelCropX(cropDragState.startCropX + deltaCropX);
+        const anchor = getSectionAnchorKeyframe(cropDragState.sectionId, true);
+        if (anchor && Math.abs(clampReelCropX(anchor.reelCropX) - newCropX) > 0.001) {
+          anchor.reelCropX = newCropX;
+          cropDragMoved = true;
+        }
+        return;
+      }
+
       if (draggingBackground && editorState && backgroundDragState) {
         const { x, y } = canvasToEditorCoords(e.clientX, e.clientY);
         const deltaX = x - backgroundDragState.startMouseX;
@@ -3001,7 +3559,14 @@ import {
       if (!draggingPip || !editorState) return;
       pipDragMoved = true;
       const { x, y } = canvasToEditorCoords(e.clientX, e.clientY);
-      const snapped = snapToNearestCorner(x, y);
+      const isReel = editorState.outputMode === 'reel';
+      const { w, h } = getEffectiveCanvasDimensions();
+      // In reel mode, translate mouse coords to crop-relative for snapping
+      const currentState = getStateAtTime(editorState.currentTime);
+      const snapContentW = isReel ? getContentWidth(editorState.sourceWidth, editorState.sourceHeight, editorState.screenFitMode) : CANVAS_W;
+      const snapX = isReel ? x - reelCropXToPixelOffset(currentState.reelCropX, currentState.backgroundZoom, snapContentW) : x;
+      const dragPipSize = computePipSize(currentState.pipScale, w);
+      const snapped = snapToNearestCorner(snapX, y, w, h, dragPipSize);
 
       const selectedSection = getSelectedSection();
       const section = selectedSection || findSectionForTime(editorState.currentTime);
@@ -3015,6 +3580,19 @@ import {
     });
 
     window.addEventListener('mouseup', () => {
+      const wasDraggingCrop = draggingCrop;
+      draggingCrop = false;
+      cropDragState = null;
+      if (wasDraggingCrop) {
+        if (cropDragMoved) {
+          scheduleProjectSave();
+        } else {
+          undoStack.pop();
+          updateUndoRedoButtons();
+        }
+        cropDragMoved = false;
+      }
+
       const wasDraggingBackground = draggingBackground;
       draggingBackground = false;
       backgroundDragState = null;
@@ -3141,6 +3719,63 @@ import {
     editorBgZoomInput.addEventListener('change', commitSectionZoomChange);
     editorBgZoomInput.addEventListener('pointerup', commitSectionZoomChange);
     editorBgZoomInput.addEventListener('blur', commitSectionZoomChange);
+
+    // Output mode toggle buttons
+    if (editorModeLandscapeBtn) {
+      editorModeLandscapeBtn.addEventListener('click', () => setOutputMode('landscape'));
+    }
+    if (editorModeReelBtn) {
+      editorModeReelBtn.addEventListener('click', () => setOutputMode('reel'));
+    }
+
+    // Crop preset buttons
+    function setCropPreset(cropX) {
+      if (!editorState || editorState.rendering || editorState.outputMode !== 'reel') return;
+      const section = getSelectedSection() || findSectionForTime(editorState.currentTime);
+      if (!section) return;
+      const anchor = getSectionAnchorKeyframe(section.id, true);
+      if (!anchor) return;
+      if (Math.abs(clampReelCropX(anchor.reelCropX) - cropX) < 0.001) return;
+      pushUndo();
+      anchor.reelCropX = cropX;
+      scheduleProjectSave();
+    }
+    if (editorCropLeftBtn) editorCropLeftBtn.addEventListener('click', () => setCropPreset(-1));
+    if (editorCropCenterBtn) editorCropCenterBtn.addEventListener('click', () => setCropPreset(0));
+    if (editorCropRightBtn) editorCropRightBtn.addEventListener('click', () => setCropPreset(1));
+
+    // PIP size slider — controls current section's anchor pipScale
+    let pipSizeDragActive = false;
+    if (editorPipSizeInput) {
+      editorPipSizeInput.addEventListener('input', () => {
+        if (!editorState || editorState.rendering) return;
+        const newScale = Math.max(MIN_PIP_SCALE, Math.min(MAX_PIP_SCALE, Number(editorPipSizeInput.value)));
+        if (!pipSizeDragActive) pushUndo();
+        pipSizeDragActive = true;
+
+        const section = getSelectedSection() || findSectionForTime(editorState.currentTime);
+        if (section) {
+          const anchor = getSectionAnchorKeyframe(section.id, true);
+          if (anchor) {
+            anchor.pipScale = newScale;
+            // Re-snap this section's PIP to nearest corner with new size
+            const { w, h } = getEffectiveCanvasDimensions();
+            const newPipSize = computePipSize(newScale, w);
+            const snapped = snapToNearestCorner(anchor.pipX, anchor.pipY, w, h, newPipSize);
+            anchor.pipX = snapped.x;
+            anchor.pipY = snapped.y;
+          }
+        }
+
+        if (editorPipSizeValue) editorPipSizeValue.textContent = newScale.toFixed(2);
+        scheduleProjectSave();
+      });
+      const commitPipSizeChange = () => { pipSizeDragActive = false; };
+      editorPipSizeInput.addEventListener('change', commitPipSizeChange);
+      editorPipSizeInput.addEventListener('pointerup', commitPipSizeChange);
+      editorPipSizeInput.addEventListener('blur', commitPipSizeChange);
+    }
+
     updateSectionZoomControls();
 
     // ===== Render pipeline =====
@@ -3208,6 +3843,7 @@ import {
           cameraSyncOffsetMs: editorState.cameraSyncOffsetMs,
           sourceWidth: editorState.sourceWidth || CANVAS_W,
           sourceHeight: editorState.sourceHeight || CANVAS_H,
+          outputMode: editorState.outputMode || 'landscape',
           outputFolder: saveFolder
         });
 
@@ -3425,6 +4061,9 @@ import {
     switchProjectBtn.addEventListener('click', async () => {
       if (recording) return;
       await flushScheduledProjectSave();
+      if (activeProjectPath) {
+        try { await window.electronAPI.cleanupDeleted(activeProjectPath); } catch (_e) { /* best effort */ }
+      }
       setWorkspaceView('home');
       await refreshRecentProjects();
     });
@@ -3497,6 +4136,25 @@ import {
       await openProjectByPath(button.dataset.projectPath, 'timeline');
     });
 
+    saveAndCleanBtn.addEventListener('click', async () => {
+      const lastProjectPath = resumeLastBtn.dataset.projectPath;
+      if (!lastProjectPath) {
+        showProjectHomeMessage('No recent project to clean up.', 'info');
+        return;
+      }
+      try {
+        const result = await window.electronAPI.cleanupUnusedTakes(lastProjectPath);
+        const count = result?.removedCount || 0;
+        const msg = count > 0
+          ? `Cleanup complete. Removed ${count} unused take${count > 1 ? 's' : ''}.`
+          : 'Cleanup complete. No unused takes found.';
+        showProjectHomeMessage(msg, 'info');
+      } catch (error) {
+        console.error('Save & Clean failed:', error);
+        showProjectHomeMessage(error?.message || 'Cleanup failed.', 'error');
+      }
+    });
+
     newProjectNameInput.addEventListener('keydown', async (event) => {
       if (event.key !== 'Enter') return;
       event.preventDefault();
@@ -3513,4 +4171,7 @@ import {
       flushScheduledProjectSave().catch((error) => {
         console.warn('Failed to flush project save on exit:', error);
       });
+      if (activeProjectPath) {
+        window.electronAPI.cleanupDeleted(activeProjectPath).catch(() => {});
+      }
     });

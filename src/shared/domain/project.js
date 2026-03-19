@@ -1,6 +1,7 @@
 const path = require('path');
 
 const MIN_BACKGROUND_ZOOM = 1;
+const MIN_REEL_BACKGROUND_ZOOM = 0.5;
 const MAX_BACKGROUND_ZOOM = 3;
 const MIN_BACKGROUND_PAN = -1;
 const MAX_BACKGROUND_PAN = 1;
@@ -8,6 +9,13 @@ const MIN_CAMERA_SYNC_OFFSET_MS = -2000;
 const MAX_CAMERA_SYNC_OFFSET_MS = 2000;
 const EXPORT_AUDIO_PRESET_OFF = 'off';
 const EXPORT_AUDIO_PRESET_COMPRESSED = 'compressed';
+const OUTPUT_MODE_LANDSCAPE = 'landscape';
+const OUTPUT_MODE_REEL = 'reel';
+const MIN_REEL_CROP_X = -1;
+const MAX_REEL_CROP_X = 1;
+const MIN_PIP_SCALE = 0.15;
+const MAX_PIP_SCALE = 0.50;
+const DEFAULT_PIP_SCALE = 0.22;
 
 function createProjectId() {
   return `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -79,17 +87,27 @@ function normalizeSections(rawSections = []) {
         sourceStart: Number.isFinite(sourceStart) ? sourceStart : 0,
         sourceEnd: Number.isFinite(sourceEnd) ? sourceEnd : 0,
         takeId: typeof section.takeId === 'string' && section.takeId ? section.takeId : null,
-        transcript
+        transcript,
+        saved: !!section.saved
       };
     })
     .filter((section) => section.end - section.start > 0.0001)
     .sort((a, b) => a.start - b.start);
 }
 
-function normalizeBackgroundZoom(value) {
+function normalizeSavedSections(rawSavedSections = []) {
+  if (!Array.isArray(rawSavedSections)) return [];
+  return normalizeSections(rawSavedSections).map(section => ({
+    ...section,
+    saved: true
+  }));
+}
+
+function normalizeBackgroundZoom(value, outputMode) {
+  const minZoom = outputMode === OUTPUT_MODE_REEL ? MIN_REEL_BACKGROUND_ZOOM : MIN_BACKGROUND_ZOOM;
   const zoom = Number(value);
-  if (!Number.isFinite(zoom)) return MIN_BACKGROUND_ZOOM;
-  return Math.max(MIN_BACKGROUND_ZOOM, Math.min(MAX_BACKGROUND_ZOOM, zoom));
+  if (!Number.isFinite(zoom)) return minZoom;
+  return Math.max(minZoom, Math.min(MAX_BACKGROUND_ZOOM, zoom));
 }
 
 function normalizeBackgroundPan(value) {
@@ -107,11 +125,19 @@ function normalizeKeyframes(rawKeyframes = []) {
       pipY: Number.isFinite(Number(keyframe.pipY)) ? Number(keyframe.pipY) : 0,
       pipVisible: keyframe.pipVisible !== false,
       cameraFullscreen: !!keyframe.cameraFullscreen,
-      backgroundZoom: normalizeBackgroundZoom(keyframe.backgroundZoom),
+      backgroundZoom: normalizeBackgroundZoom(keyframe.backgroundZoom, OUTPUT_MODE_REEL),
       backgroundPanX: normalizeBackgroundPan(keyframe.backgroundPanX),
       backgroundPanY: normalizeBackgroundPan(keyframe.backgroundPanY),
+      reelCropX: normalizeReelCropX(keyframe.reelCropX),
+      pipScale: normalizePipScale(keyframe.pipScale),
       sectionId: typeof keyframe.sectionId === 'string' ? keyframe.sectionId : null,
-      autoSection: !!keyframe.autoSection
+      autoSection: !!keyframe.autoSection,
+      savedLandscape: keyframe.savedLandscape && typeof keyframe.savedLandscape === 'object'
+        ? { ...keyframe.savedLandscape }
+        : null,
+      savedReel: keyframe.savedReel && typeof keyframe.savedReel === 'object'
+        ? { ...keyframe.savedReel }
+        : null
     }))
     .sort((a, b) => a.time - b.time);
 }
@@ -128,6 +154,23 @@ function normalizeCameraSyncOffsetMs(value) {
   return Math.max(MIN_CAMERA_SYNC_OFFSET_MS, Math.min(MAX_CAMERA_SYNC_OFFSET_MS, offset));
 }
 
+function normalizeReelCropX(value) {
+  const v = Number(value);
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(MIN_REEL_CROP_X, Math.min(MAX_REEL_CROP_X, v));
+}
+
+function normalizeOutputMode(value) {
+  return value === OUTPUT_MODE_REEL ? OUTPUT_MODE_REEL : OUTPUT_MODE_LANDSCAPE;
+}
+
+function normalizePipScale(value) {
+  if (value === null || value === undefined) return DEFAULT_PIP_SCALE;
+  const v = Number(value);
+  if (!Number.isFinite(v)) return DEFAULT_PIP_SCALE;
+  return Math.max(MIN_PIP_SCALE, Math.min(MAX_PIP_SCALE, v));
+}
+
 function createDefaultProject(name = 'Untitled Project') {
   const now = new Date().toISOString();
   return {
@@ -139,7 +182,9 @@ function createDefaultProject(name = 'Untitled Project') {
       screenFitMode: 'fill',
       hideFromRecording: true,
       exportAudioPreset: EXPORT_AUDIO_PRESET_COMPRESSED,
-      cameraSyncOffsetMs: 0
+      cameraSyncOffsetMs: 0,
+      outputMode: OUTPUT_MODE_LANDSCAPE,
+      pipScale: DEFAULT_PIP_SCALE
     },
     takes: [],
     timeline: {
@@ -174,7 +219,9 @@ function normalizeProjectData(rawProject, projectFolder) {
       screenFitMode: rawSettings.screenFitMode === 'fit' ? 'fit' : 'fill',
       hideFromRecording: rawSettings.hideFromRecording !== false,
       exportAudioPreset: normalizeExportAudioPreset(rawSettings.exportAudioPreset),
-      cameraSyncOffsetMs: normalizeCameraSyncOffsetMs(rawSettings.cameraSyncOffsetMs)
+      cameraSyncOffsetMs: normalizeCameraSyncOffsetMs(rawSettings.cameraSyncOffsetMs),
+      outputMode: normalizeOutputMode(rawSettings.outputMode),
+      pipScale: normalizePipScale(rawSettings.pipScale)
     },
     takes: rawTakes.map((take, index) => ({
       id: typeof take?.id === 'string' && take.id ? take.id : `take-${index + 1}-${Date.now()}`,
@@ -191,6 +238,7 @@ function normalizeProjectData(rawProject, projectFolder) {
     timeline: {
       duration: Number.isFinite(Number(rawTimeline.duration)) ? Number(rawTimeline.duration) : 0,
       sections: normalizeSections(rawTimeline.sections),
+      savedSections: normalizeSavedSections(rawTimeline.savedSections),
       keyframes: normalizeKeyframes(rawTimeline.keyframes),
       selectedSectionId:
         typeof rawTimeline.selectedSectionId === 'string' ? rawTimeline.selectedSectionId : null,
@@ -211,15 +259,27 @@ module.exports = {
   toProjectAbsolutePath,
   toProjectRelativePath,
   normalizeSections,
+  normalizeSavedSections,
   normalizeBackgroundZoom,
   normalizeBackgroundPan,
   normalizeKeyframes,
   normalizeExportAudioPreset,
   normalizeCameraSyncOffsetMs,
+  normalizeReelCropX,
+  normalizeOutputMode,
+  normalizePipScale,
   createDefaultProject,
   normalizeProjectData,
   MIN_CAMERA_SYNC_OFFSET_MS,
   MAX_CAMERA_SYNC_OFFSET_MS,
   EXPORT_AUDIO_PRESET_OFF,
-  EXPORT_AUDIO_PRESET_COMPRESSED
+  EXPORT_AUDIO_PRESET_COMPRESSED,
+  OUTPUT_MODE_LANDSCAPE,
+  OUTPUT_MODE_REEL,
+  MIN_REEL_CROP_X,
+  MAX_REEL_CROP_X,
+  MIN_PIP_SCALE,
+  MAX_PIP_SCALE,
+  DEFAULT_PIP_SCALE,
+  MIN_REEL_BACKGROUND_ZOOM
 };
