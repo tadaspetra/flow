@@ -122,7 +122,13 @@ function normalizeKeyframes(rawKeyframes = []) {
       reelCropX: normalizeReelCropX(keyframe.reelCropX),
       pipScale: normalizePipScale(keyframe.pipScale),
       sectionId: typeof keyframe.sectionId === 'string' ? keyframe.sectionId : null,
-      autoSection: !!keyframe.autoSection
+      autoSection: !!keyframe.autoSection,
+      savedLandscape: keyframe.savedLandscape && typeof keyframe.savedLandscape === 'object'
+        ? { ...keyframe.savedLandscape }
+        : null,
+      savedReel: keyframe.savedReel && typeof keyframe.savedReel === 'object'
+        ? { ...keyframe.savedReel }
+        : null
     }))
     .sort((a, b) => a.time - b.time);
 }

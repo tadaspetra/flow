@@ -42,6 +42,8 @@ export function buildSplitAnchorKeyframe(keyframes, parentSectionId, newSectionI
     reelCropX: parent?.reelCropX ?? 0,
     pipScale: parent?.pipScale ?? defaults.pipScale ?? 0.22,
     sectionId: newSectionId,
-    autoSection: true
+    autoSection: true,
+    savedLandscape: parent?.savedLandscape ? { ...parent.savedLandscape } : null,
+    savedReel: parent?.savedReel ? { ...parent.savedReel } : null
   };
 }

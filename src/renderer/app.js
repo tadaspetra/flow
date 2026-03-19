@@ -176,6 +176,10 @@ import {
     const DEFAULT_PIP_SCALE = 0.22;
     const MIN_PIP_SCALE = 0.15;
     const MAX_PIP_SCALE = 0.50;
+    const MODE_SPECIFIC_PROPS = [
+      'backgroundZoom', 'backgroundPanX', 'backgroundPanY',
+      'pipX', 'pipY', 'pipScale', 'pipVisible', 'cameraFullscreen', 'reelCropX'
+    ];
 
     function normalizePipScale(value) {
       if (value === null || value === undefined) return DEFAULT_PIP_SCALE;
@@ -228,6 +232,46 @@ import {
       return Math.round(effectiveW * pipScale);
     }
 
+    function saveModeState(kf, mode) {
+      const slot = {};
+      for (const prop of MODE_SPECIFIC_PROPS) {
+        slot[prop] = kf[prop];
+      }
+      kf[mode === 'reel' ? 'savedReel' : 'savedLandscape'] = slot;
+    }
+
+    function restoreModeState(kf, mode, defaults) {
+      const slotKey = mode === 'reel' ? 'savedReel' : 'savedLandscape';
+      const saved = kf[slotKey];
+      if (saved) {
+        for (const prop of MODE_SPECIFIC_PROPS) {
+          if (prop in saved) kf[prop] = saved[prop];
+        }
+      } else {
+        for (const prop of MODE_SPECIFIC_PROPS) {
+          kf[prop] = defaults[prop];
+        }
+      }
+    }
+
+    function getDefaultModeState(mode) {
+      const w = mode === 'reel' ? REEL_CANVAS_W : CANVAS_W;
+      const h = mode === 'reel' ? REEL_CANVAS_H : CANVAS_H;
+      const ps = DEFAULT_PIP_SCALE;
+      const pipSize = computePipSize(ps, w);
+      return {
+        backgroundZoom: 1,
+        backgroundPanX: 0,
+        backgroundPanY: 0,
+        pipX: w - pipSize - PIP_MARGIN,
+        pipY: h - pipSize - PIP_MARGIN,
+        pipScale: ps,
+        pipVisible: true,
+        cameraFullscreen: false,
+        reelCropX: 0
+      };
+    }
+
     function getContentWidth(sourceW, sourceH, fitMode) {
       if (fitMode !== 'fit' || !sourceW || !sourceH) return CANVAS_W;
       const scale = Math.min(CANVAS_W / sourceW, CANVAS_H / sourceH);
@@ -249,27 +293,23 @@ import {
       const newMode = mode === 'reel' ? 'reel' : 'landscape';
       if (editorState.outputMode === newMode) return;
       pushUndo();
+
+      const oldMode = editorState.outputMode;
+      const defaults = getDefaultModeState(newMode);
+
+      // Save current mode state, then restore or apply defaults for new mode
+      if (editorState.keyframes) {
+        for (const kf of editorState.keyframes) {
+          saveModeState(kf, oldMode);
+          restoreModeState(kf, newMode, defaults);
+        }
+      }
+
       editorState.outputMode = newMode;
 
       const { w, h } = getEffectiveCanvasDimensions();
       const defaultPs = editorState.pipScale || DEFAULT_PIP_SCALE;
       editorState.pipSize = computePipSize(defaultPs, w);
-
-      // Re-map PIP positions and clamp zoom values for the new mode
-      if (editorState.keyframes) {
-        for (const kf of editorState.keyframes) {
-          // When switching to landscape, clamp any zoom < 1 up to 1
-          if (newMode === 'landscape' && kf.backgroundZoom < 1) {
-            kf.backgroundZoom = 1;
-          }
-          if (kf.sectionId) {
-            const kfPipSize = computePipSize(kf.pipScale || defaultPs, w);
-            const snapped = snapToNearestCorner(kf.pipX, kf.pipY, w, h, kfPipSize);
-            kf.pipX = snapped.x;
-            kf.pipY = snapped.y;
-          }
-        }
-      }
       editorState.defaultPipX = w - editorState.pipSize - PIP_MARGIN;
       editorState.defaultPipY = h - editorState.pipSize - PIP_MARGIN;
 
@@ -740,7 +780,8 @@ import {
         sections: editorState.sections.map(s => ({ ...s })),
         keyframes: editorState.keyframes.map(kf => ({ ...kf })),
         selectedSectionId: editorState.selectedSectionId,
-        duration: editorState.duration
+        duration: editorState.duration,
+        outputMode: editorState.outputMode
       };
     }
 
@@ -749,6 +790,15 @@ import {
       editorState.keyframes = snapshot.keyframes;
       editorState.selectedSectionId = snapshot.selectedSectionId;
       editorState.duration = snapshot.duration;
+      if (snapshot.outputMode) {
+        editorState.outputMode = snapshot.outputMode;
+        const { w, h } = getEffectiveCanvasDimensions();
+        const defaultPs = editorState.pipScale || DEFAULT_PIP_SCALE;
+        editorState.pipSize = computePipSize(defaultPs, w);
+        editorState.defaultPipX = w - editorState.pipSize - PIP_MARGIN;
+        editorState.defaultPipY = h - editorState.pipSize - PIP_MARGIN;
+        updateOutputModeUI();
+      }
       recalculateTimelinePositions();
       syncSectionAnchorKeyframes();
       renderSectionMarkers();
@@ -992,7 +1042,9 @@ import {
         reelCropX: clampReelCropX(fallback.reelCropX),
         pipScale: normalizePipScale(fallback.pipScale),
         sectionId: section.id,
-        autoSection: true
+        autoSection: true,
+        savedLandscape: null,
+        savedReel: null
       };
       editorState.keyframes.push(anchor);
       editorState.keyframes.sort((a, b) => a.time - b.time);
@@ -1073,6 +1125,8 @@ import {
         anchor.backgroundPanY = clampSectionPan(currentAnchor.backgroundPanY);
         anchor.reelCropX = clampReelCropX(currentAnchor.reelCropX);
         anchor.pipScale = normalizePipScale(currentAnchor.pipScale);
+        anchor.savedLandscape = currentAnchor.savedLandscape ? { ...currentAnchor.savedLandscape } : null;
+        anchor.savedReel = currentAnchor.savedReel ? { ...currentAnchor.savedReel } : null;
       }
 
       renderSectionMarkers();
