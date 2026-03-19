@@ -228,10 +228,18 @@ import {
       return Math.round(effectiveW * pipScale);
     }
 
-    function reelCropXToPixelOffset(reelCropX, zoom) {
+    function getContentWidth(sourceW, sourceH, fitMode) {
+      if (fitMode !== 'fit' || !sourceW || !sourceH) return CANVAS_W;
+      const scale = Math.min(CANVAS_W / sourceW, CANVAS_H / sourceH);
+      return sourceW * scale;
+    }
+
+    function reelCropXToPixelOffset(reelCropX, zoom, contentW) {
+      const cw = contentW || CANVAS_W;
       const z = Math.min(1, Math.max(0, zoom != null ? zoom : 1));
-      const scaledW = CANVAS_W * z;
-      const scaledLeft = (CANVAS_W - scaledW) / 2;
+      const contentLeft = (CANVAS_W - cw) / 2;
+      const scaledW = cw * z;
+      const scaledLeft = contentLeft + (cw - scaledW) / 2;
       const maxCropRange = Math.max(0, scaledW - REEL_CANVAS_W);
       return scaledLeft + ((clampReelCropX(reelCropX) + 1) / 2) * maxCropRange;
     }
@@ -3066,7 +3074,8 @@ import {
       }
 
       const isReel = editorState.outputMode === 'reel';
-      const cropPixelX = isReel ? reelCropXToPixelOffset(state.reelCropX, state.backgroundZoom) : 0;
+      const editorContentW = isReel ? getContentWidth(editorState.sourceWidth, editorState.sourceHeight, editorState.screenFitMode) : CANVAS_W;
+      const cropPixelX = isReel ? reelCropXToPixelOffset(state.reelCropX, state.backgroundZoom, editorContentW) : 0;
       const effectiveW = isReel ? REEL_CANVAS_W : CANVAS_W;
       const currentPipSize = computePipSize(state.pipScale, effectiveW);
 
@@ -3218,7 +3227,8 @@ import {
       const { x, y } = canvasToEditorCoords(e.clientX, e.clientY);
       const kf = getStateAtTime(editorState.currentTime);
       const isReel = editorState.outputMode === 'reel';
-      const cropOffsetX = isReel ? reelCropXToPixelOffset(kf.reelCropX, kf.backgroundZoom) : 0;
+      const mousedownContentW = isReel ? getContentWidth(editorState.sourceWidth, editorState.sourceHeight, editorState.screenFitMode) : CANVAS_W;
+      const cropOffsetX = isReel ? reelCropXToPixelOffset(kf.reelCropX, kf.backgroundZoom, mousedownContentW) : 0;
 
       // PIP hit-test: in reel mode, PIP coords are relative to crop region
       if (editorState.hasCamera && kf.pipVisible && kf.camTransition <= 0) {
@@ -3277,7 +3287,8 @@ import {
         const { x } = canvasToEditorCoords(e.clientX, e.clientY);
         const deltaX = x - cropDragState.startMouseX;
         const zoom = cropDragState.zoom || 1;
-        const scaledW = CANVAS_W * Math.min(1, zoom);
+        const dragContentW = getContentWidth(editorState.sourceWidth, editorState.sourceHeight, editorState.screenFitMode);
+        const scaledW = dragContentW * Math.min(1, zoom);
         const maxCropRange = Math.max(0, scaledW - REEL_CANVAS_W);
         const deltaCropX = maxCropRange > 0 ? (deltaX / maxCropRange) * 2 : 0;
         const newCropX = clampReelCropX(cropDragState.startCropX + deltaCropX);
@@ -3311,7 +3322,8 @@ import {
       const { w, h } = getEffectiveCanvasDimensions();
       // In reel mode, translate mouse coords to crop-relative for snapping
       const currentState = getStateAtTime(editorState.currentTime);
-      const snapX = isReel ? x - reelCropXToPixelOffset(currentState.reelCropX, currentState.backgroundZoom) : x;
+      const snapContentW = isReel ? getContentWidth(editorState.sourceWidth, editorState.sourceHeight, editorState.screenFitMode) : CANVAS_W;
+      const snapX = isReel ? x - reelCropXToPixelOffset(currentState.reelCropX, currentState.backgroundZoom, snapContentW) : x;
       const dragPipSize = computePipSize(currentState.pipScale, w);
       const snapped = snapToNearestCorner(snapX, y, w, h, dragPipSize);
 

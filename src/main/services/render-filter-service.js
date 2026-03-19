@@ -125,6 +125,12 @@ function buildCamFullAlphaExpr(keyframes) {
   return expr;
 }
 
+function getContentWidth(sourceW, sourceH, fitMode, canvasW, canvasH) {
+  if (fitMode !== 'fit' || !sourceW || !sourceH) return canvasW;
+  const scale = Math.min(canvasW / sourceW, canvasH / sourceH);
+  return sourceW * scale;
+}
+
 function buildScreenFilter(
   keyframes,
   screenFitMode,
@@ -167,10 +173,14 @@ function buildScreenFilter(
       || Math.abs(keyframe.backgroundPanY) > 0.0001;
   });
 
+  // Compute content width for fit mode crop constraining
+  const contentW = screenPreprocessed ? landscapeW : getContentWidth(sourceWidth, sourceHeight, screenFitMode, landscapeW, landscapeH);
+  const contentLeft = Math.round((landscapeW - contentW) / 2);
+
   // Build reel crop suffix if in reel mode
   let reelCropSuffix = '';
   if (isReel) {
-    const maxOffset = landscapeW - finalW;
+    const maxCropRange = Math.max(0, Math.round(contentW) - finalW);
     const hasAnimatedCrop = normalizedKeyframes.some((kf, i) => {
       if (i === 0) return false;
       return Math.abs(kf.reelCropX - normalizedKeyframes[i - 1].reelCropX) > 0.0001;
@@ -178,9 +188,9 @@ function buildScreenFilter(
 
     if (hasAnimatedCrop) {
       const cropXExpr = buildNumericExpr(normalizedKeyframes, 'reelCropX', 3, 0, 't');
-      reelCropSuffix = `,crop=${finalW}:${finalH}:'max(0,min(${maxOffset},(${cropXExpr}+1)/2*${maxOffset}))':0,setsar=1`;
+      reelCropSuffix = `,crop=${finalW}:${finalH}:'max(0,min(${landscapeW - finalW},${contentLeft}+(${cropXExpr}+1)/2*${maxCropRange}))':0,setsar=1`;
     } else {
-      const cropX = Math.max(0, Math.min(maxOffset, Math.round(((normalizedKeyframes[0]?.reelCropX || 0) + 1) / 2 * maxOffset)));
+      const cropX = Math.max(0, Math.min(landscapeW - finalW, contentLeft + Math.round(((normalizedKeyframes[0]?.reelCropX || 0) + 1) / 2 * maxCropRange)));
       reelCropSuffix = `,crop=${finalW}:${finalH}:${cropX}:0,setsar=1`;
     }
   }
@@ -218,15 +228,15 @@ function buildScreenFilter(
       const offsetX = Math.round((landscapeW - scaledW) / 2);
       const offsetY = Math.round((landscapeH - scaledH) / 2);
 
-      // Crop constrained to scaled screen bounds
-      const scaledLeft = Math.round((landscapeW - landscapeW * zoom) / 2);
-      const maxCropRange = Math.max(0, Math.round(landscapeW * zoom - finalW));
+      // Crop constrained to scaled content bounds (accounts for fit-mode padding)
+      const zoScaledLeft = Math.round((landscapeW - contentW * zoom) / 2);
+      const maxCropRange = Math.max(0, Math.round(contentW * zoom - finalW));
       let zoCropSuffix;
       if (hasAnimatedCrop) {
         const cropXExpr = buildNumericExpr(normalizedKeyframes, 'reelCropX', 3, 0, 't');
-        zoCropSuffix = `,crop=${finalW}:${finalH}:'max(0,${scaledLeft}+((${cropXExpr})+1)/2*${maxCropRange})':0,setsar=1`;
+        zoCropSuffix = `,crop=${finalW}:${finalH}:'max(0,${zoScaledLeft}+((${cropXExpr})+1)/2*${maxCropRange})':0,setsar=1`;
       } else {
-        const cropX = Math.max(0, scaledLeft + Math.round(((normalizedKeyframes[0]?.reelCropX || 0) + 1) / 2 * maxCropRange));
+        const cropX = Math.max(0, zoScaledLeft + Math.round(((normalizedKeyframes[0]?.reelCropX || 0) + 1) / 2 * maxCropRange));
         zoCropSuffix = `,crop=${finalW}:${finalH}:${cropX}:0,setsar=1`;
       }
 
@@ -243,10 +253,11 @@ function buildScreenFilter(
     const scalePart = `scale=w='max(2,2*floor(${landscapeW}*min(1.0,${zoomExprT})/2))':h='max(2,2*floor(${landscapeH}*min(1.0,${zoomExprT})/2))':eval=frame`;
     const overlayPart = `overlay=x='(main_w-overlay_w)/2':y='(main_h-overlay_h)/2':eval=frame`;
 
-    // Crop constrained to scaled screen: cropX = scaledLeft + ((reelCropX+1)/2) * maxRange
+    // Crop constrained to scaled content bounds: cropX = contentScaledLeft + ((reelCropX+1)/2) * maxRange
     const cropXExpr = buildNumericExpr(normalizedKeyframes, 'reelCropX', 3, 0, 't');
     const zMinExpr = `min(1,${zoomExprT})`;
-    const fullCropExpr = `${landscapeW}*(1-${zMinExpr})/2+((${cropXExpr})+1)/2*max(0,${landscapeW}*${zMinExpr}-${finalW})`;
+    const cw = Math.round(contentW);
+    const fullCropExpr = `(${landscapeW}-${cw}*${zMinExpr})/2+((${cropXExpr})+1)/2*max(0,${cw}*${zMinExpr}-${finalW})`;
     const zoCropSuffix = `,crop=${finalW}:${finalH}:'max(0,min(${landscapeW - finalW},${fullCropExpr}))':0,setsar=1`;
 
     return `${baseFilter};[screen_base]split[for_zoom][for_bg];[for_bg]${darkenFilter}[dark_bg];[for_zoom]${zoompanPart}[zoomed];[zoomed]${scalePart}[scaled];[dark_bg][scaled]${overlayPart}${zoCropSuffix}${outputLabel}`;
