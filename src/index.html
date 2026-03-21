@@ -234,6 +234,13 @@
           <span id="editorOverlaySizeValue" class="text-xs font-mono tabular-nums text-indigo-300 min-w-[38px] text-right cursor-ew-resize">100%</span>
           <input id="editorOverlaySizeInput" type="range" min="0.05" max="5.0" step="0.01" value="1" class="hidden" />
         </div>
+        <!-- Auto-track controls -->
+        <div id="editorAutoTrackControl" class="hidden items-center gap-1 px-2 py-1 border border-emerald-900 rounded-lg bg-neutral-900 select-none">
+          <button id="editorAutoTrackToggle" class="text-xs text-emerald-400 hover:text-emerald-300 transition-colors" title="Toggle mouse auto-tracking">Track</button>
+          <span id="editorAutoTrackSmoothScrub" class="text-xs text-neutral-400 cursor-ew-resize" title="Drag to adjust tracking smoothness">Smooth</span>
+          <span id="editorAutoTrackSmoothValue" class="text-xs font-mono tabular-nums text-emerald-300 min-w-[32px] text-right cursor-ew-resize">0.15</span>
+          <input id="editorAutoTrackSmoothInput" type="range" min="0.01" max="1.0" step="0.01" value="0.15" class="hidden" />
+        </div>
         <!-- Mode toggle -->
         <div class="flex items-center border border-neutral-800 rounded-lg bg-neutral-900 overflow-hidden">
           <button id="editorModeLandscape" class="px-2.5 py-1 text-xs bg-white text-black transition-colors">16:9</button>

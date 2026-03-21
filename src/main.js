@@ -1,7 +1,7 @@
 require('dotenv').config();
 require('electron-reload')(__dirname);
 
-const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, shell, screen } = require('electron');
 
 const { createWindow } = require('./main/app/create-window');
 const { registerIpcHandlers } = require('./main/ipc/register-handlers');
@@ -21,6 +21,7 @@ registerIpcHandlers({
   desktopCapturer,
   shell,
   getWindow: () => win,
+  screen,
   projectService,
   renderComposite,
   computeSections,

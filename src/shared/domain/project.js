@@ -144,6 +144,10 @@ function normalizeKeyframes(rawKeyframes = []) {
       reelCropX: normalizeReelCropX(keyframe.reelCropX),
       pipScale: normalizePipScale(keyframe.pipScale),
       pipSnapPoint: normalizePipSnapPoint(keyframe.pipSnapPoint),
+      autoTrack: !!keyframe.autoTrack,
+      autoTrackSmoothing: Number.isFinite(Number(keyframe.autoTrackSmoothing))
+        ? Math.max(0.01, Math.min(1.0, Number(keyframe.autoTrackSmoothing)))
+        : 0.15,
       sectionId: typeof keyframe.sectionId === 'string' ? keyframe.sectionId : null,
       autoSection: !!keyframe.autoSection,
       savedLandscape: keyframe.savedLandscape && typeof keyframe.savedLandscape === 'object'
@@ -324,6 +328,9 @@ function normalizeProjectData(rawProject, projectFolder) {
       cameraPath: projectFolder
         ? toProjectAbsolutePath(projectFolder, take?.cameraPath)
         : take?.cameraPath || null,
+      mousePath: projectFolder
+        ? toProjectAbsolutePath(projectFolder, take?.mousePath)
+        : take?.mousePath || null,
       sections: normalizeSections(take?.sections)
     })),
     timeline: {

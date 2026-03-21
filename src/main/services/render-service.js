@@ -14,6 +14,8 @@ const {
 const { chooseRenderFps, probeVideoFpsWithFfmpeg } = require('./fps-service');
 const { runFfmpeg } = require('./ffmpeg-runner');
 const { buildFilterComplex, buildScreenFilter, buildOverlayFilter, resolveOutputSize } = require('./render-filter-service');
+const { readJsonFile } = require('../infra/file-system');
+const { subsampleTrail } = require('../../shared/domain/mouse-trail');
 
 function normalizeSectionInput(rawSections) {
   const sections = Array.isArray(rawSections) ? rawSections : [];
@@ -171,6 +173,87 @@ function buildRenderProgressUpdate(progress, totalDurationSec) {
   };
 }
 
+function expandAutoTrackKeyframes(keyframes, sections, takeMap, _deps) {
+  const hasAutoTrack = keyframes.some(kf => kf.autoTrack && (kf.backgroundZoom || 1) > 1.0001);
+  if (!hasAutoTrack) return keyframes;
+
+  // Load mouse trails for takes that have auto-track sections
+  const trailCache = new Map();
+  for (const section of sections) {
+    const take = takeMap.get(section.takeId);
+    if (!take) continue;
+    // Find the take's mousePath from the raw take data
+    const mousePath = take.mousePath || null;
+    if (!mousePath || trailCache.has(section.takeId)) continue;
+    try {
+      const data = readJsonFile(mousePath);
+      if (data && Array.isArray(data.trail)) {
+        trailCache.set(section.takeId, data);
+      }
+    } catch (_) { /* no trail available */ }
+  }
+
+  if (trailCache.size === 0) return keyframes;
+
+  // Build expanded keyframe array with mouse trail keypoints
+  const expanded = [];
+  let timelineTime = 0;
+
+  for (const section of sections) {
+    const sectionDuration = section.sourceEnd - section.sourceStart;
+    const sectionStart = timelineTime;
+    const sectionEnd = timelineTime + sectionDuration;
+
+    // Find the anchor keyframe for this section
+    const anchor = keyframes.find(kf => Math.abs(kf.time - sectionStart) < 0.01);
+    const isAutoTrack = anchor && anchor.autoTrack && (anchor.backgroundZoom || 1) > 1.0001;
+
+    if (isAutoTrack) {
+      const trailData = trailCache.get(section.takeId);
+      if (trailData && trailData.trail.length > 0) {
+        const smoothing = anchor.autoTrackSmoothing || 0.15;
+        const kps = subsampleTrail(
+          trailData.trail, smoothing,
+          trailData.captureWidth, trailData.captureHeight,
+          section.sourceStart, section.sourceEnd, 2
+        );
+        // Convert subsampled keypoints to timeline keyframes
+        for (const kp of kps) {
+          const t = sectionStart + (kp.time - section.sourceStart);
+          expanded.push({
+            ...anchor,
+            time: t,
+            backgroundFocusX: kp.focusX,
+            backgroundFocusY: kp.focusY
+          });
+        }
+      } else {
+        expanded.push(anchor);
+      }
+    } else if (anchor) {
+      expanded.push(anchor);
+    }
+
+    // Include any manual keyframes within this section's time range
+    for (const kf of keyframes) {
+      if (kf === anchor) continue;
+      if (kf.time > sectionStart + 0.01 && kf.time < sectionEnd - 0.01) {
+        expanded.push(kf);
+      }
+    }
+
+    timelineTime = sectionEnd;
+  }
+
+  // Include keyframes at time 0 if not already covered
+  const hasTimeZero = expanded.some(kf => kf.time < 0.01);
+  if (!hasTimeZero && keyframes.length > 0) {
+    expanded.unshift(keyframes[0]);
+  }
+
+  return expanded.sort((a, b) => a.time - b.time);
+}
+
 async function renderComposite(opts = {}, deps = {}) {
   const takes = Array.isArray(opts.takes) ? opts.takes : [];
   const sections = normalizeSectionInput(opts.sections);
@@ -205,7 +288,7 @@ async function renderComposite(opts = {}, deps = {}) {
   const takeMap = new Map();
   for (const take of takes) {
     if (!take || typeof take.id !== 'string' || !take.id) continue;
-    takeMap.set(take.id, { screenPath: take.screenPath, cameraPath: take.cameraPath });
+    takeMap.set(take.id, { screenPath: take.screenPath, cameraPath: take.cameraPath, mousePath: take.mousePath || null });
   }
 
   const hasCamera = keyframes.some((keyframe) => keyframe.pipVisible || keyframe.cameraFullscreen);
@@ -271,8 +354,12 @@ async function renderComposite(opts = {}, deps = {}) {
 
     const cameraLabels = sections.map((_, index) => `[cv${index}]`).join('');
     filterParts.push(`${cameraLabels}concat=n=${sections.length}:v=1:a=0[camera_raw]`);
+
+    // Expand keyframes with auto-track mouse trail data
+    const renderKeyframes = expandAutoTrackKeyframes(keyframes, sections, takeMap, deps);
+
     const overlayFilter = buildFilterComplex(
-      keyframes,
+      renderKeyframes,
       pipSize,
       screenFitMode,
       sourceWidth,
@@ -298,8 +385,9 @@ async function renderComposite(opts = {}, deps = {}) {
     filterParts.push(adaptedOverlay);
   } else {
     const outputLabel = overlays.length > 0 ? '[screen]' : '[out]';
+    const renderKeyframesNoCamera = expandAutoTrackKeyframes(keyframes, sections, takeMap, deps);
     const screenOnlyFilter = buildScreenFilter(
-      keyframes,
+      renderKeyframesNoCamera,
       screenFitMode,
       sourceWidth,
       sourceHeight,

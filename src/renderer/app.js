@@ -24,6 +24,9 @@ import {
 import {
   getOverlayStateAtTime as _getOverlayStateAtTime
 } from './features/timeline/overlay-utils.js';
+import {
+  lookupSmoothedMouseAt
+} from './features/timeline/mouse-trail.js';
 
     const projectHomeView = document.getElementById('projectHomeView');
     const workspaceHeader = document.getElementById('workspaceHeader');
@@ -91,6 +94,11 @@ import {
     const editorPipSizeControl = document.getElementById('editorPipSizeControl');
     const editorPipSizeInput = document.getElementById('editorPipSizeInput');
     const editorPipSizeValue = document.getElementById('editorPipSizeValue');
+    const editorAutoTrackControl = document.getElementById('editorAutoTrackControl');
+    const editorAutoTrackToggle = document.getElementById('editorAutoTrackToggle');
+    const editorAutoTrackSmoothScrub = document.getElementById('editorAutoTrackSmoothScrub');
+    const editorAutoTrackSmoothValue = document.getElementById('editorAutoTrackSmoothValue');
+    const editorAutoTrackSmoothInput = document.getElementById('editorAutoTrackSmoothInput');
     const editorOverlaySizeControl = document.getElementById('editorOverlaySizeControl');
     const editorOverlaySizeInput = document.getElementById('editorOverlaySizeInput');
     const editorOverlaySizeValue = document.getElementById('editorOverlaySizeValue');
@@ -119,6 +127,9 @@ import {
     let recording = false;
     let screenRecInterval = null;
     let timerInterval = null;
+    let mouseTrailSamples = [];
+    let mouseTrailCaptureWidth = null;
+    let mouseTrailCaptureHeight = null;
     let startTime = 0;
     let audioContext = null;
     let analyser = null;
@@ -196,7 +207,8 @@ import {
     const MAX_PIP_SCALE = 0.50;
     const MODE_SPECIFIC_PROPS = [
       'backgroundZoom', 'backgroundPanX', 'backgroundPanY',
-      'pipX', 'pipY', 'pipScale', 'pipVisible', 'cameraFullscreen', 'reelCropX', 'pipSnapPoint'
+      'pipX', 'pipY', 'pipScale', 'pipVisible', 'cameraFullscreen', 'reelCropX', 'pipSnapPoint',
+      'autoTrack', 'autoTrackSmoothing'
     ];
 
     function normalizePipScale(value) {
@@ -313,7 +325,9 @@ import {
         pipVisible: true,
         cameraFullscreen: false,
         reelCropX: 0,
-        pipSnapPoint: 'br'
+        pipSnapPoint: 'br',
+        autoTrack: false,
+        autoTrackSmoothing: 0.15
       };
     }
 
@@ -474,6 +488,7 @@ import {
     let takeAudioBufferCache = new Map(); // takeId -> AudioBuffer
     let takeVideoPool = new Map(); // takeId -> { screen: HTMLVideoElement, camera: HTMLVideoElement|null }
     const overlayImageCache = new Map(); // mediaPath -> HTMLImageElement
+    const mouseTrailCache = new Map(); // takeId -> { captureWidth, captureHeight, trail }
     let overlayVideoEl = null; // single reusable <video> for overlay playback
     let overlayVideoCurrentPath = null;
     let activeTakeId = null;
@@ -564,6 +579,27 @@ import {
     function pathToFileUrl(filePath) {
       if (!filePath) return '';
       return window.electronAPI.pathToFileUrl(filePath);
+    }
+
+    async function loadMouseTrail(takeId) {
+      if (mouseTrailCache.has(takeId)) return mouseTrailCache.get(takeId);
+      const take = activeProject?.takes?.find(t => t.id === takeId);
+      if (!take?.mousePath) return null;
+      try {
+        const response = await fetch(pathToFileUrl(take.mousePath));
+        const data = await response.json();
+        if (data && Array.isArray(data.trail)) {
+          mouseTrailCache.set(takeId, data);
+          return data;
+        }
+      } catch (err) {
+        console.warn('Failed to load mouse trail:', err);
+      }
+      return null;
+    }
+
+    function getMouseTrailForTake(takeId) {
+      return mouseTrailCache.get(takeId) || null;
     }
 
     function getOverlayImageElement(mediaPath) {
@@ -840,6 +876,7 @@ import {
       cleanupVideoPool();
       // Clean up overlay media state
       overlayImageCache.clear();
+      mouseTrailCache.clear();
       if (overlayVideoEl) {
         overlayVideoEl.pause();
         overlayVideoEl.removeAttribute('src');
@@ -869,7 +906,7 @@ import {
       if (isTakeReferenced(takeId)) return;
       const take = activeProject.takes?.find(t => t.id === takeId);
       if (!take) return;
-      const filePaths = [take.screenPath, take.cameraPath].filter(Boolean);
+      const filePaths = [take.screenPath, take.cameraPath, take.mousePath].filter(Boolean);
       if (filePaths.length > 0) {
         await window.electronAPI.stageTakeFiles(activeProjectPath, filePaths);
       }
@@ -879,7 +916,7 @@ import {
       if (!takeId || !activeProjectPath || !activeProject) return;
       const take = activeProject.takes?.find(t => t.id === takeId);
       if (!take) return;
-      const fileNames = [take.screenPath, take.cameraPath]
+      const fileNames = [take.screenPath, take.cameraPath, take.mousePath]
         .filter(Boolean)
         .map(p => {
           const parts = p.split(/[/\\]/);
@@ -1247,6 +1284,24 @@ import {
         editorPipSizeInput.value = String(sectionPipScale);
         if (editorPipSizeValue) editorPipSizeValue.textContent = sectionPipScale.toFixed(2);
       }
+
+      // Update auto-track controls
+      if (editorAutoTrackControl && editorState) {
+        const sectionAnchor = selectedSection ? getSectionAnchorKeyframe(selectedSection.id, false) : null;
+        const hasMouseData = selectedSection && getMouseTrailForTake(selectedSection.takeId);
+        const showAutoTrack = hasMouseData && zoom > 1.0001;
+        editorAutoTrackControl.classList.toggle('hidden', !showAutoTrack);
+        editorAutoTrackControl.classList.toggle('flex', !!showAutoTrack);
+        if (showAutoTrack && sectionAnchor) {
+          const isOn = !!sectionAnchor.autoTrack;
+          editorAutoTrackToggle.textContent = isOn ? 'Track \u2713' : 'Track';
+          editorAutoTrackToggle.style.color = isOn ? '' : '';
+          editorAutoTrackToggle.className = `text-xs transition-colors ${isOn ? 'text-emerald-300 font-bold' : 'text-emerald-400 hover:text-emerald-300'}`;
+          const sm = sectionAnchor.autoTrackSmoothing || 0.15;
+          editorAutoTrackSmoothInput.value = String(sm);
+          editorAutoTrackSmoothValue.textContent = sm.toFixed(2);
+        }
+      }
     }
 
     function getSectionAnchorKeyframe(sectionId, createIfMissing) {
@@ -1271,6 +1326,8 @@ import {
         reelCropX: clampReelCropX(fallback.reelCropX),
         pipScale: normalizePipScale(fallback.pipScale),
         pipSnapPoint: fallback.pipSnapPoint || 'br',
+        autoTrack: !!fallback.autoTrack,
+        autoTrackSmoothing: fallback.autoTrackSmoothing || 0.15,
         sectionId: section.id,
         autoSection: true,
         savedLandscape: null,
@@ -1306,6 +1363,8 @@ import {
           reelCropX: existing ? clampReelCropX(existing.reelCropX) : 0,
           pipScale: existing ? normalizePipScale(existing.pipScale) : (editorState.pipScale || DEFAULT_PIP_SCALE),
           pipSnapPoint: existing?.pipSnapPoint || 'br',
+          autoTrack: existing ? !!existing.autoTrack : false,
+          autoTrackSmoothing: existing?.autoTrackSmoothing || 0.15,
           sectionId: section.id,
           autoSection: true,
           savedLandscape: existing?.savedLandscape ? { ...existing.savedLandscape } : null,
@@ -1382,6 +1441,8 @@ import {
         anchor.reelCropX = clampReelCropX(currentAnchor.reelCropX);
         anchor.pipScale = normalizePipScale(currentAnchor.pipScale);
         anchor.pipSnapPoint = currentAnchor.pipSnapPoint || 'br';
+        anchor.autoTrack = !!currentAnchor.autoTrack;
+        anchor.autoTrackSmoothing = currentAnchor.autoTrackSmoothing || 0.15;
         anchor.savedLandscape = currentAnchor.savedLandscape ? { ...currentAnchor.savedLandscape } : null;
         anchor.savedReel = currentAnchor.savedReel ? { ...currentAnchor.savedReel } : null;
       }
@@ -2161,7 +2222,9 @@ import {
         backgroundPanX: clampSectionPan(kf.backgroundPanX),
         backgroundPanY: clampSectionPan(kf.backgroundPanY),
         reelCropX: clampReelCropX(kf.reelCropX),
-        pipScale: normalizePipScale(kf.pipScale)
+        pipScale: normalizePipScale(kf.pipScale),
+        autoTrack: !!kf.autoTrack,
+        autoTrackSmoothing: kf.autoTrackSmoothing || 0.15
       }));
 
       if (minimal.length === 0 || minimal[0].time > 0.0001) {
@@ -2646,6 +2709,8 @@ import {
         const recCanvas = document.createElement('canvas');
         recCanvas.width = settings.width || 1920;
         recCanvas.height = settings.height || 1080;
+        mouseTrailCaptureWidth = recCanvas.width;
+        mouseTrailCaptureHeight = recCanvas.height;
         const recCtx = recCanvas.getContext('2d', { alpha: false });
         recCtx.drawImage(screenVideo, 0, 0, recCanvas.width, recCanvas.height);
         screenRecInterval = setInterval(() => {
@@ -2673,6 +2738,12 @@ import {
 
       startTime = Date.now();
       timerInterval = setInterval(updateTimer, 200);
+
+      mouseTrailSamples = [];
+      mouseTrailCaptureWidth = null;
+      mouseTrailCaptureHeight = null;
+      // Start mouse trail capture in main process — zero IPC during recording
+      window.electronAPI.startMouseTrail().catch(() => {});
 
       // Show transcript panel and clear previous content
       transcriptPanel.classList.remove('hidden');
@@ -3172,6 +3243,13 @@ import {
       const recordedDuration = (Date.now() - startTime) / 1000;
       clearInterval(timerInterval);
 
+      // Stop mouse trail capture in main process and retrieve samples
+      try {
+        mouseTrailSamples = await window.electronAPI.stopMouseTrail();
+      } catch (_) {
+        mouseTrailSamples = [];
+      }
+
       // Stop audio send interval
       if (audioSendInterval) {
         clearInterval(audioSendInterval);
@@ -3265,6 +3343,24 @@ import {
         // Set takeId on all sections
         sectionsForTimeline = sectionsForTimeline.map(s => ({ ...s, takeId }));
 
+        // Save mouse trail if samples were captured
+        let mousePath = null;
+        if (mouseTrailSamples.length > 0 && activeProjectPath) {
+          try {
+            const trailData = {
+              captureWidth: mouseTrailCaptureWidth || 1920,
+              captureHeight: mouseTrailCaptureHeight || 1080,
+              interval: 100,
+              trail: mouseTrailSamples
+            };
+            const suffix = takeId.replace('take-', '');
+            mousePath = await window.electronAPI.saveMouseTrail(activeProjectPath, suffix, trailData);
+          } catch (err) {
+            console.warn('Failed to save mouse trail:', err);
+          }
+          mouseTrailSamples = [];
+        }
+
         // Add take to project before entering editor (video pool needs it)
         if (activeProject) {
           if (!Array.isArray(activeProject.takes)) activeProject.takes = [];
@@ -3274,6 +3370,7 @@ import {
             duration: recordedDuration,
             screenPath,
             cameraPath,
+            mousePath: mousePath ? `${activeProjectPath}/${mousePath}` : null,
             sections: sectionsForTimeline
           });
         }
@@ -3348,6 +3445,8 @@ import {
         backgroundPanY: 0,
         reelCropX: 0,
         pipSnapPoint: 'br',
+        autoTrack: false,
+        autoTrackSmoothing: 0.15,
         sectionId: section.id,
         autoSection: true
       }));
@@ -3407,10 +3506,11 @@ import {
       updateSectionZoomControls();
       updateOutputModeUI();
 
-      // Pre-create video elements for all referenced takes
+      // Pre-create video elements and preload mouse trails for all referenced takes
       const referencedTakeIds = new Set(sections.map(s => s.takeId).filter(Boolean));
       for (const takeId of referencedTakeIds) {
         getOrCreateTakeVideos(takeId);
+        loadMouseTrail(takeId).catch(() => {});
       }
 
       // Set up initial active take from first section
@@ -3476,7 +3576,9 @@ import {
         backgroundPanY: 0,
         reelCropX: 0,
         pipScale: editorState.pipScale || DEFAULT_PIP_SCALE,
-        pipSnapPoint: 'br'
+        pipSnapPoint: 'br',
+        autoTrack: false,
+        autoTrackSmoothing: 0.15
       };
       const userKfs = editorState.keyframes;
       const kfs = userKfs.length > 0 && userKfs[0].time === 0 ? userKfs : [defaultKf, ...userKfs];
@@ -3566,6 +3668,24 @@ import {
         }
       }
 
+      // Auto-track: override focus coordinates from mouse trail when enabled and zoomed
+      if (active.autoTrack && backgroundZoom > 1.0001) {
+        const activeSection = findSectionForTime(time);
+        if (activeSection) {
+          const trailData = getMouseTrailForTake(activeSection.takeId);
+          if (trailData && trailData.trail && trailData.trail.length > 0) {
+            const sourceTime = activeSection.sourceStart + (time - activeSection.start);
+            const smoothed = lookupSmoothedMouseAt(
+              trailData.trail, sourceTime,
+              active.autoTrackSmoothing || 0.15,
+              trailData.captureWidth, trailData.captureHeight
+            );
+            backgroundFocusX = smoothed.focusX;
+            backgroundFocusY = smoothed.focusY;
+          }
+        }
+      }
+
       return {
         pipX,
         pipY,
@@ -3580,7 +3700,9 @@ import {
         backgroundFocusY,
         reelCropX,
         pipScale,
-        pipSnapPoint: active.pipSnapPoint || 'br'
+        pipSnapPoint: active.pipSnapPoint || 'br',
+        autoTrack: !!active.autoTrack,
+        autoTrackSmoothing: active.autoTrackSmoothing || 0.15
       };
     }
 
@@ -3846,7 +3968,6 @@ import {
 
     function editorDrawLoop() {
       if (!editorState) return;
-
       if (editorState.playing && activeTakeId && activePlaybackSection) {
         const videos = getOrCreateTakeVideos(activeTakeId);
         if (videos) {
@@ -4230,6 +4351,8 @@ import {
       }
 
       if (!activeSection || kf.backgroundZoom <= 1.0001 || (kf.cameraFullscreen && kf.opacity > 0)) return;
+      // Disable manual pan drag when auto-track is active
+      if (kf.autoTrack) return;
       const initialPan = getSectionBackgroundPan(activeSection.id);
       pushUndo();
       backgroundDragMoved = false;
@@ -4791,6 +4914,45 @@ import {
     initScrubDrag(editorBgZoomScrub, editorBgZoomValue, editorBgZoomInput);
     initScrubDrag(editorPipSizeScrub, editorPipSizeValue, editorPipSizeInput);
     initScrubDrag(editorOverlaySizeScrub, editorOverlaySizeValue, editorOverlaySizeInput);
+    initScrubDrag(editorAutoTrackSmoothScrub, editorAutoTrackSmoothValue, editorAutoTrackSmoothInput);
+
+    // Auto-track toggle
+    if (editorAutoTrackToggle) {
+      editorAutoTrackToggle.addEventListener('click', () => {
+        if (!editorState || editorState.rendering) return;
+        const section = getSelectedSection() || findSectionForTime(editorState.currentTime);
+        if (!section) return;
+        const anchor = getSectionAnchorKeyframe(section.id, true);
+        if (!anchor) return;
+        pushUndo();
+        anchor.autoTrack = !anchor.autoTrack;
+        updateSectionZoomControls();
+        scheduleProjectSave();
+      });
+    }
+
+    // Auto-track smoothing input
+    let autoTrackSmoothDragActive = false;
+    if (editorAutoTrackSmoothInput) {
+      editorAutoTrackSmoothInput.addEventListener('input', () => {
+        if (!editorState || editorState.rendering) return;
+        const section = getSelectedSection() || findSectionForTime(editorState.currentTime);
+        if (!section) return;
+        const anchor = getSectionAnchorKeyframe(section.id, true);
+        if (!anchor) return;
+        if (!autoTrackSmoothDragActive) pushUndo();
+        autoTrackSmoothDragActive = true;
+        anchor.autoTrackSmoothing = Math.max(0.01, Math.min(1.0, parseFloat(editorAutoTrackSmoothInput.value)));
+        editorAutoTrackSmoothValue.textContent = anchor.autoTrackSmoothing.toFixed(2);
+      });
+      const commitAutoTrackSmooth = () => {
+        if (autoTrackSmoothDragActive) scheduleProjectSave();
+        autoTrackSmoothDragActive = false;
+      };
+      editorAutoTrackSmoothInput.addEventListener('change', commitAutoTrackSmooth);
+      editorAutoTrackSmoothInput.addEventListener('pointerup', commitAutoTrackSmooth);
+      editorAutoTrackSmoothInput.addEventListener('blur', commitAutoTrackSmooth);
+    }
 
     // Overlay size input handler — resizes overlay maintaining aspect ratio
     let overlaySizeDragActive = false;
@@ -4932,7 +5094,7 @@ import {
         for (const takeId of referencedTakeIds) {
           const take = activeProject?.takes?.find(t => t.id === takeId);
           if (take) {
-            takes.push({ id: take.id, screenPath: take.screenPath, cameraPath: take.cameraPath });
+            takes.push({ id: take.id, screenPath: take.screenPath, cameraPath: take.cameraPath, mousePath: take.mousePath || null });
           }
         }
 

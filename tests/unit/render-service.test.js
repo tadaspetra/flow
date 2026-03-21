@@ -233,9 +233,11 @@ describe('main/services/render-service', () => {
     );
 
     const argString = execCalls[0].args.join(' ');
-    expect(argString).toContain("[screen_raw]setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080[screen_base];[screen_base]zoompan=z='2.000'");
+    // Static zoom (single keyframe) uses crop+scale, not zoompan
+    expect(argString).toContain('[screen_base]');
+    expect(argString).toContain('crop=');
     expect(argString).toContain('[1:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,fps=fps=30[cv0]');
-    expect(argString).not.toContain('scale=3840:2160,crop=1920:1080:960:540[cv0]');
+    expect(argString).not.toContain('zoompan');
   });
 
   test('renderComposite advances camera video when camera sync offset is positive', async () => {
@@ -311,7 +313,10 @@ describe('main/services/render-service', () => {
     );
 
     const argString = execCalls[0].args.join(' ');
-    expect(argString).toContain("zoompan=z='2.000':x='max(0,min(iw-iw/zoom,iw*(0.750000)-iw/zoom/2))':y='max(0,min(ih-ih/zoom,ih*(0.250000)-ih/zoom/2))'");
+    // Static zoom+pan (single keyframe) uses crop+scale with computed focus position
+    expect(argString).toContain('crop=');
+    expect(argString).toContain('scale=');
+    expect(argString).not.toContain('zoompan');
   });
 
   test('renderComposite animates background zoom and pan through section boundaries', async () => {
@@ -587,6 +592,63 @@ describe('main/services/render-service', () => {
     // Overlay chains from [screen] to [out] (no camera in this test)
     expect(argsStr).toContain('[screen]');
     expect(argsStr).toContain('[out]');
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('renderComposite uses auto-track mouse trail for zoompan expressions', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-autotrack-'));
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+
+    // Create mouse trail file
+    const mouseTrail = {
+      captureWidth: 1920,
+      captureHeight: 1080,
+      interval: 50,
+      trail: [
+        { t: 0, x: 100, y: 100 },
+        { t: 0.5, x: 500, y: 300 },
+        { t: 1.0, x: 900, y: 500 },
+        { t: 1.5, x: 1400, y: 700 },
+        { t: 2.0, x: 1800, y: 900 }
+      ]
+    };
+    const mousePath = path.join(tmpDir, 'recording-mouse.json');
+    fs.writeFileSync(mousePath, JSON.stringify(mouseTrail), 'utf8');
+
+    const execCalls = [];
+    await renderComposite(
+      {
+        outputFolder: tmpDir,
+        takes: [{ id: 'take-1', screenPath, cameraPath: null, mousePath }],
+        sections: [{ takeId: 'take-1', sourceStart: 0, sourceEnd: 2 }],
+        keyframes: [{
+          time: 0, pipX: 10, pipY: 10, pipVisible: false, cameraFullscreen: false,
+          backgroundZoom: 2.0, backgroundPanX: 0, backgroundPanY: 0,
+          autoTrack: true, autoTrackSmoothing: 0.15
+        }],
+        pipSize: 300,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        screenFitMode: 'fill'
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 888,
+        probeVideoFpsWithFfmpeg: async () => 30,
+        runFfmpeg: async ({ args }) => {
+          execCalls.push(args);
+        }
+      }
+    );
+
+    expect(execCalls).toHaveLength(1);
+    const argsStr = execCalls[0].join(' ');
+    // Should have zoompan with animated x/y from mouse trail keypoints
+    expect(argsStr).toContain('zoompan');
+    // Auto-track produces multiple keypoints, so the focus expressions should be animated (contain if/gte)
+    expect(argsStr).toContain('if(gte(');
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

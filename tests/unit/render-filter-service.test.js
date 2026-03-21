@@ -423,7 +423,9 @@ describe('main/services/render-filter-service', () => {
     );
     expect(filter).toContain('force_original_aspect_ratio=decrease');
     expect(filter).toContain('pad=1440:810:');
-    expect(filter).toContain('zoompan');
+    // Static zoom (single keyframe) uses crop+scale, not zoompan
+    expect(filter).toContain('crop=');
+    expect(filter).toContain('scale=');
   });
 
   test('buildScreenFilter in reel mode + preprocessed does NOT apply landscape fit scaling', () => {

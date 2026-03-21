@@ -155,8 +155,12 @@ function buildScreenFilter(
     backgroundZoom: Number.isFinite(Number(keyframe?.backgroundZoom)) ? Number(keyframe.backgroundZoom) : 1,
     backgroundPanX: Number.isFinite(Number(keyframe?.backgroundPanX)) ? Number(keyframe.backgroundPanX) : 0,
     backgroundPanY: Number.isFinite(Number(keyframe?.backgroundPanY)) ? Number(keyframe.backgroundPanY) : 0,
-    backgroundFocusX: panToFocusCoord(keyframe?.backgroundZoom, keyframe?.backgroundPanX, 0.5),
-    backgroundFocusY: panToFocusCoord(keyframe?.backgroundZoom, keyframe?.backgroundPanY, 0.5),
+    backgroundFocusX: Number.isFinite(Number(keyframe?.backgroundFocusX))
+      ? Number(keyframe.backgroundFocusX)
+      : panToFocusCoord(keyframe?.backgroundZoom, keyframe?.backgroundPanX, 0.5),
+    backgroundFocusY: Number.isFinite(Number(keyframe?.backgroundFocusY))
+      ? Number(keyframe.backgroundFocusY)
+      : panToFocusCoord(keyframe?.backgroundZoom, keyframe?.backgroundPanY, 0.5),
     reelCropX: Number.isFinite(Number(keyframe?.reelCropX)) ? Number(keyframe.reelCropX) : 0
   }));
 
@@ -174,10 +178,18 @@ function buildScreenFilter(
   const baseW = (isReel && screenPreprocessed) ? sourceWidth : landscapeW;
   const baseH = (isReel && screenPreprocessed) ? sourceHeight : landscapeH;
 
-  const hasBackgroundAnimation = normalizedKeyframes.some((keyframe) => {
+  // Check if zoom/pan values vary between keyframes (true animation, not just static zoom)
+  const hasNonDefaultZoomPan = normalizedKeyframes.some((keyframe) => {
     return Math.abs(keyframe.backgroundZoom - 1) > 0.0001
       || Math.abs(keyframe.backgroundPanX) > 0.0001
       || Math.abs(keyframe.backgroundPanY) > 0.0001;
+  });
+  const hasBackgroundAnimation = hasNonDefaultZoomPan && normalizedKeyframes.length > 1 && normalizedKeyframes.some((kf, i) => {
+    if (i === 0) return false;
+    const prev = normalizedKeyframes[i - 1];
+    return Math.abs(kf.backgroundZoom - prev.backgroundZoom) > 0.0001
+      || Math.abs(kf.backgroundFocusX - prev.backgroundFocusX) > 0.0001
+      || Math.abs(kf.backgroundFocusY - prev.backgroundFocusY) > 0.0001;
   });
 
   // Compute content width for fit mode crop constraining
@@ -271,11 +283,22 @@ function buildScreenFilter(
     return `${baseFilter};[screen_base]split[for_zoom][for_bg];[for_bg]${darkenFilter}[dark_bg];[for_zoom]${zoompanPart}[zoomed];[zoomed]${scalePart}[scaled];[dark_bg][scaled]${overlayPart}${zoCropSuffix}${outputLabel}`;
   }
 
-  // --- Standard pipeline (no zoom-out) ---
+  // --- Standard pipeline (no animation between keyframes) ---
   if (!hasBackgroundAnimation) {
     if (isReel) {
-      // Need an intermediate label for the reel crop
       return `${baseFilter};[screen_base]null${reelCropSuffix}${outputLabel}`;
+    }
+    // Static zoom > 1: apply a fixed crop centered on focus point
+    if (hasNonDefaultZoomPan && normalizedKeyframes.length > 0) {
+      const kf = normalizedKeyframes[0];
+      const zoom = Math.max(1, kf.backgroundZoom);
+      const cropW = Math.round(baseW / zoom);
+      const cropH = Math.round(baseH / zoom);
+      const focusX = kf.backgroundFocusX != null ? kf.backgroundFocusX : 0.5;
+      const focusY = kf.backgroundFocusY != null ? kf.backgroundFocusY : 0.5;
+      const cropX = Math.max(0, Math.min(baseW - cropW, Math.round(focusX * baseW - cropW / 2)));
+      const cropY = Math.max(0, Math.min(baseH - cropH, Math.round(focusY * baseH - cropH / 2)));
+      return `${baseFilter};[screen_base]crop=${cropW}:${cropH}:${cropX}:${cropY},scale=${baseW}:${baseH},setsar=1${outputLabel}`;
     }
     return baseFilter.replace('[screen_base]', outputLabel);
   }

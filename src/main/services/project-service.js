@@ -137,7 +137,8 @@ function createProjectService({ app }) {
     serializable.takes = serializable.takes.map((take) => ({
       ...take,
       screenPath: toProjectRelativePath(projectFolder, take.screenPath),
-      cameraPath: toProjectRelativePath(projectFolder, take.cameraPath)
+      cameraPath: toProjectRelativePath(projectFolder, take.cameraPath),
+      mousePath: toProjectRelativePath(projectFolder, take.mousePath)
     }));
 
     writeJsonFile(getProjectFilePath(projectFolder), serializable);
@@ -420,6 +421,15 @@ function createProjectService({ app }) {
     fs.renameSync(src, dest);
   }
 
+  function saveMouseTrail(projectPath, suffix, trailData) {
+    const resolvedProject = path.resolve(projectPath);
+    ensureDirectory(resolvedProject);
+    const filename = `recording-${suffix}-mouse.json`;
+    const filePath = path.join(resolvedProject, filename);
+    writeJsonFile(filePath, trailData);
+    return filename;
+  }
+
   function saveVideo(buffer, folder, suffix) {
     const filename = `recording-${Date.now()}${suffix ? `-${suffix}` : ''}.webm`;
     ensureDirectory(folder);
@@ -460,7 +470,8 @@ function createProjectService({ app }) {
     cleanupUnusedTakes,
     importOverlayMedia,
     stageOverlayFile,
-    unstageOverlayFile
+    unstageOverlayFile,
+    saveMouseTrail
   };
 }
 

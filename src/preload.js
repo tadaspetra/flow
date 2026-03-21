@@ -49,5 +49,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   unstageOverlayFile: (projectPath, mediaPath) => ipcRenderer.invoke('project:unstageOverlayFile', projectPath, mediaPath),
   getFilePathFromDrop: (file) => {
     try { return webUtils.getPathForFile(file); } catch (_) { return null; }
-  }
+  },
+  getCursorPosition: () => ipcRenderer.invoke('get-cursor-position'),
+  startMouseTrail: () => ipcRenderer.invoke('start-mouse-trail'),
+  stopMouseTrail: () => ipcRenderer.invoke('stop-mouse-trail'),
+  saveMouseTrail: (projectPath, suffix, trailData) => ipcRenderer.invoke('save-mouse-trail', projectPath, suffix, trailData)
 })

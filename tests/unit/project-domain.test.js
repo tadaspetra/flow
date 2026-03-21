@@ -459,6 +459,21 @@ describe('shared/domain/project', () => {
     expect(result[0].id).toBe('a');
   });
 
+  test('normalizeKeyframes includes autoTrack and autoTrackSmoothing', () => {
+    const keyframes = normalizeKeyframes([
+      { time: 0, pipX: 10, pipY: 20, autoTrack: true, autoTrackSmoothing: 0.3 },
+      { time: 1, pipX: 30, pipY: 40 },
+      { time: 2, pipX: 50, pipY: 60, autoTrack: false, autoTrackSmoothing: 0.005 },
+      { time: 3, pipX: 70, pipY: 80, autoTrackSmoothing: 2.0 }
+    ]);
+    expect(keyframes[0].autoTrack).toBe(true);
+    expect(keyframes[0].autoTrackSmoothing).toBe(0.3);
+    expect(keyframes[1].autoTrack).toBe(false); // default
+    expect(keyframes[1].autoTrackSmoothing).toBe(0.15); // default
+    expect(keyframes[2].autoTrackSmoothing).toBe(0.01); // clamped min
+    expect(keyframes[3].autoTrackSmoothing).toBe(1.0); // clamped max
+  });
+
   test('normalizeProjectData includes overlays in timeline', () => {
     const project = normalizeProjectData(
       { timeline: { overlays: [

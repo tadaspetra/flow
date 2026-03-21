@@ -7,6 +7,7 @@ function registerIpcHandlers({
   desktopCapturer,
   shell,
   getWindow,
+  screen,
   projectService,
   renderComposite,
   computeSections,
@@ -162,6 +163,42 @@ function registerIpcHandlers({
 
   ipcMain.handle('project:unstageOverlayFile', async (_event, projectPath, mediaPath) => {
     return projectService.unstageOverlayFile(projectPath, mediaPath);
+  });
+
+  ipcMain.handle('get-cursor-position', () => {
+    if (!screen) return { x: 0, y: 0 };
+    return screen.getCursorScreenPoint();
+  });
+
+  // Mouse trail capture runs entirely in main process — no IPC during recording
+  let mouseTrailTimer = null;
+  let mouseTrailSamples = [];
+  let mouseTrailStartTime = 0;
+
+  ipcMain.handle('start-mouse-trail', () => {
+    mouseTrailSamples = [];
+    mouseTrailStartTime = Date.now();
+    if (mouseTrailTimer) clearInterval(mouseTrailTimer);
+    mouseTrailTimer = setInterval(() => {
+      if (!screen) return;
+      const pos = screen.getCursorScreenPoint();
+      const elapsed = (Date.now() - mouseTrailStartTime) / 1000;
+      mouseTrailSamples.push({ t: Number(elapsed.toFixed(3)), x: pos.x, y: pos.y });
+    }, 100);
+  });
+
+  ipcMain.handle('stop-mouse-trail', () => {
+    if (mouseTrailTimer) {
+      clearInterval(mouseTrailTimer);
+      mouseTrailTimer = null;
+    }
+    const samples = mouseTrailSamples;
+    mouseTrailSamples = [];
+    return samples;
+  });
+
+  ipcMain.handle('save-mouse-trail', async (_event, projectPath, suffix, trailData) => {
+    return projectService.saveMouseTrail(projectPath, suffix, trailData);
   });
 }
 
