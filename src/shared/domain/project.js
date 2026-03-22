@@ -22,6 +22,7 @@ const VALID_OVERLAY_MEDIA_TYPES = ['image', 'video'];
 const OVERLAY_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
 const OVERLAY_VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov'];
 const DEFAULT_OVERLAY_POSITION = { x: 0, y: 0, width: 400, height: 300 };
+const MAX_OVERLAY_TRACKS = 2;
 
 let overlayIdCounter = 0;
 
@@ -213,8 +214,13 @@ function normalizeOverlays(rawOverlays) {
         sourceStart = 0;
         sourceEnd = duration;
       }
+      const rawTrack = Number(overlay.trackIndex);
+      const trackIndex = Number.isFinite(rawTrack) && rawTrack >= 0
+        ? Math.min(Math.floor(rawTrack), MAX_OVERLAY_TRACKS - 1)
+        : 0;
       return {
         id: overlay.id,
+        trackIndex,
         mediaPath: overlay.mediaPath,
         mediaType: overlay.mediaType,
         startTime,
@@ -225,26 +231,35 @@ function normalizeOverlays(rawOverlays) {
         reel: normalizeOverlayPosition(overlay.reel),
         saved: !!overlay.saved
       };
-    })
-    .sort((a, b) => a.startTime - b.startTime);
+    });
 
-  // Enforce no-overlap: later segments are trimmed
-  for (let i = 1; i < valid.length; i += 1) {
-    const prev = valid[i - 1];
-    if (valid[i].startTime < prev.endTime) {
-      const shift = prev.endTime - valid[i].startTime;
-      valid[i].startTime = prev.endTime;
-      if (valid[i].mediaType === 'video') {
-        valid[i].sourceStart += shift;
+  // Group by trackIndex, enforce no-overlap within each track
+  const tracks = {};
+  for (const o of valid) {
+    if (!tracks[o.trackIndex]) tracks[o.trackIndex] = [];
+    tracks[o.trackIndex].push(o);
+  }
+  const result = [];
+  for (const trackIdx of Object.keys(tracks).sort((a, b) => Number(a) - Number(b))) {
+    const group = tracks[trackIdx].sort((a, b) => a.startTime - b.startTime);
+    for (let i = 1; i < group.length; i += 1) {
+      const prev = group[i - 1];
+      if (group[i].startTime < prev.endTime) {
+        const shift = prev.endTime - group[i].startTime;
+        group[i].startTime = prev.endTime;
+        if (group[i].mediaType === 'video') {
+          group[i].sourceStart += shift;
+        }
+      }
+      if (group[i].endTime <= group[i].startTime) {
+        group.splice(i, 1);
+        i -= 1;
       }
     }
-    if (valid[i].endTime <= valid[i].startTime) {
-      valid.splice(i, 1);
-      i -= 1;
-    }
+    result.push(...group);
   }
 
-  return valid;
+  return result;
 }
 
 function normalizeReelCropX(value) {
@@ -391,5 +406,6 @@ module.exports = {
   VALID_OVERLAY_MEDIA_TYPES,
   OVERLAY_IMAGE_EXTENSIONS,
   OVERLAY_VIDEO_EXTENSIONS,
-  DEFAULT_OVERLAY_POSITION
+  DEFAULT_OVERLAY_POSITION,
+  MAX_OVERLAY_TRACKS
 };

@@ -1,12 +1,4 @@
-## ADDED Requirements
-
-### Requirement: Image overlay display at playhead
-
-When the playhead is within an image overlay's time range, the system SHALL draw the image on the editor canvas at the overlay's current-mode position and size. Images are loaded once and cached. Multiple image overlays from different tracks can be displayed simultaneously.
-
-#### Scenario: Two simultaneous image overlays
-- **WHEN** playhead is at 6s, a track 0 image overlay exists at 5-10s, and a track 1 image overlay exists at 4-8s
-- **THEN** both images are drawn on the canvas at their respective positions (track 0 behind track 1)
+## MODIFIED Requirements
 
 ### Requirement: Video overlay playback sync
 
@@ -23,6 +15,14 @@ When the playhead is within a video overlay's time range, the system SHALL displ
 #### Scenario: Video overlay source time boundary
 - **WHEN** an overlay video reaches sourceEnd during playback
 - **THEN** the video frame freezes at the last frame (does not loop)
+
+### Requirement: Image overlay display at playhead
+
+When the playhead is within an image overlay's time range, the system SHALL draw the image on the editor canvas at the overlay's current-mode position and size. Images are loaded once and cached. Multiple image overlays from different tracks can be displayed simultaneously.
+
+#### Scenario: Two simultaneous image overlays
+- **WHEN** playhead is at 6s, a track 0 image overlay exists at 5-10s, and a track 1 image overlay exists at 4-8s
+- **THEN** both images are drawn on the canvas at their respective positions (track 0 behind track 1)
 
 ### Requirement: Overlay fade transitions
 

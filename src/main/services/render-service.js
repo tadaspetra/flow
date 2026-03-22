@@ -258,7 +258,9 @@ async function renderComposite(opts = {}, deps = {}) {
   const takes = Array.isArray(opts.takes) ? opts.takes : [];
   const sections = normalizeSectionInput(opts.sections);
   const keyframes = Array.isArray(opts.keyframes) ? opts.keyframes : [];
-  const overlays = Array.isArray(opts.overlays) ? opts.overlays.filter(o => o && o.mediaPath && o.mediaType) : [];
+  const overlays = Array.isArray(opts.overlays)
+    ? opts.overlays.filter(o => o && o.mediaPath && o.mediaType).sort((a, b) => (a.trackIndex || 0) - (b.trackIndex || 0) || a.startTime - b.startTime)
+    : [];
   const pipSize = Number.isFinite(Number(opts.pipSize)) ? Number(opts.pipSize) : 422;
   const screenFitMode = opts.screenFitMode === 'fit' ? 'fit' : 'fill';
   const exportAudioPreset = normalizeExportAudioPreset(opts.exportAudioPreset);
@@ -409,7 +411,7 @@ async function renderComposite(opts = {}, deps = {}) {
     for (const a of args) { if (a === '-i') overlayInputOffset += 1; }
     const overlayResult = buildOverlayFilter(
       overlays, canvasW, canvasH, outW, outH,
-      overlayInputOffset, 'screen', outputMode
+      overlayInputOffset, 'screen', outputMode, totalDurationSec
     );
     // Add overlay media inputs to args
     for (let i = 0; i < overlayResult.inputs.length; i++) {

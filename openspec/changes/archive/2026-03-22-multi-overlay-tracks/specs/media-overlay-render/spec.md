@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Overlay included in ffmpeg filter chain
 
@@ -16,46 +16,6 @@ When overlay segments exist in the render data, the ffmpeg filter chain SHALL co
 - **WHEN** rendering a project with no overlay segments
 - **THEN** the ffmpeg filter chain is unchanged from the existing screen + PIP pipeline
 
-### Requirement: Image overlay input format
-
-Image overlay inputs SHALL use `-loop 1 -t {duration}` flags to create a video stream from a static image. The duration SHALL be the overlay's visible time range (`endTime - startTime`). The image SHALL be scaled to the target `width × height` from the current output mode's position data.
-
-#### Scenario: Image overlay ffmpeg input
-- **WHEN** an image overlay spans 5-10s (5 second duration) at 400×300 pixels
-- **THEN** the ffmpeg input is: `-loop 1 -t 5 -i {imagePath}` and the filter includes `scale=400:300`
-
-### Requirement: Video overlay input format
-
-Video overlay inputs SHALL use standard `-i {videoPath}` input with trim to the overlay's source time range. The video SHALL be trimmed from `sourceStart` to `sourceEnd` and scaled to the target `width × height`.
-
-#### Scenario: Video overlay ffmpeg input
-- **WHEN** a video overlay has sourceStart=2, sourceEnd=8, width=500, height=300
-- **THEN** the ffmpeg filter includes `trim=start=2:end=8,setpts=PTS-STARTPTS` on the overlay input, followed by `scale=500:300`
-
-### Requirement: Overlay position in render output
-
-The overlay SHALL be positioned in the render output using the ffmpeg `overlay` filter with `x` and `y` parameters matching the output mode's stored coordinates, scaled from canvas coordinates to output coordinates (using the same `outW/canvasW` and `outH/canvasH` ratios used for PIP positioning).
-
-#### Scenario: Overlay position scaling
-- **WHEN** canvas is 1920×1080 and output is 1440×810, overlay at canvas position (384, 216)
-- **THEN** overlay render position is scaled: x=384*(1440/1920)=288, y=216*(810/1080)=162
-
-### Requirement: Time-bounded overlay with enable expression
-
-The overlay filter SHALL use `enable='between(t,{startTime},{endTime})'` to restrict the overlay to its time range within the rendered timeline. The time values SHALL be in rendered timeline seconds (after section concatenation).
-
-#### Scenario: Overlay visible only during its time range
-- **WHEN** an overlay exists at 5-10s in the rendered timeline
-- **THEN** the overlay filter includes `enable='between(t,5.000,10.000)'`
-
-### Requirement: Overlay fade in render
-
-The overlay input SHALL have fade-in and fade-out filters applied before compositing. Fade-in SHALL occur over 0.3s starting at the overlay's `startTime`. Fade-out SHALL occur over 0.3s ending at the overlay's `endTime`.
-
-#### Scenario: Overlay with fade filters
-- **WHEN** an overlay spans 5-10s
-- **THEN** the overlay input chain includes `fade=in:st=0:d=0.3,fade=out:st=4.7:d=0.3` (times relative to the overlay input's own timeline, where 0 = startTime and 4.7 = duration - 0.3)
-
 ### Requirement: Position interpolation between segments in render
 
 When two adjacent overlay segments share the same `mediaPath` with no time gap AND are on the same `trackIndex`, the overlay position and size SHALL be interpolated over `TRANSITION_DURATION` (0.3s). Position interpolation SHALL NOT occur between segments on different tracks.
@@ -67,14 +27,6 @@ When two adjacent overlay segments share the same `mediaPath` with no time gap A
 #### Scenario: No interpolation between segments on different tracks
 - **WHEN** segment A (track 0, 5-10s, image.png) and segment B (track 1, 10-15s, image.png) share mediaPath
 - **THEN** no position interpolation — each overlay has independent fade in/out
-
-### Requirement: Reel mode overlay rendering
-
-In reel mode, overlays from all tracks SHALL use their `reel.{x, y, width, height}` values, scaled to the reel output resolution. Track 0 overlays are composited before track 1 overlays, same as landscape mode.
-
-#### Scenario: Reel render with two-track overlays
-- **WHEN** rendering in reel mode with overlays on both tracks
-- **THEN** each overlay uses its reel position slot, and track ordering is preserved (track 0 below track 1)
 
 ### Requirement: Multiple overlays in single render
 
@@ -99,3 +51,11 @@ The `buildOverlayFilter()` function SHALL accept overlays sorted by `[trackIndex
 #### Scenario: Overlays on both tracks
 - **WHEN** called with track 0 overlays [A@2s, B@8s] and track 1 overlays [C@5s, D@12s]
 - **THEN** the filter processes A, B, C, D in order, chaining: `[screen] → [ovl_0] → [ovl_1] → [ovl_2] → [ovl_3]`
+
+### Requirement: Reel mode overlay rendering
+
+In reel mode, overlays from all tracks SHALL use their `reel.{x, y, width, height}` values, scaled to the reel output resolution. Track 0 overlays are composited before track 1 overlays, same as landscape mode.
+
+#### Scenario: Reel render with two-track overlays
+- **WHEN** rendering in reel mode with overlays on both tracks
+- **THEN** each overlay uses its reel position slot, and track ordering is preserved (track 0 below track 1)

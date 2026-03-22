@@ -611,17 +611,85 @@ describe('main/services/render-filter-service', () => {
 
   test('buildOverlayFilter skips fade between same-media adjacent segments', () => {
     const overlays = [
-      { id: 'o1', mediaPath: 'img.png', mediaType: 'image', startTime: 0, endTime: 5, sourceStart: 0, sourceEnd: 5,
+      { id: 'o1', mediaPath: 'img.png', mediaType: 'image', startTime: 2, endTime: 7, sourceStart: 0, sourceEnd: 5,
         landscape: { x: 100, y: 100, width: 400, height: 300 }, reel: { x: 0, y: 0, width: 200, height: 150 } },
-      { id: 'o2', mediaPath: 'img.png', mediaType: 'image', startTime: 5, endTime: 10, sourceStart: 0, sourceEnd: 5,
+      { id: 'o2', mediaPath: 'img.png', mediaType: 'image', startTime: 7, endTime: 12, sourceStart: 0, sourceEnd: 5,
         landscape: { x: 500, y: 300, width: 400, height: 300 }, reel: { x: 0, y: 0, width: 200, height: 150 } }
     ];
-    const result = buildOverlayFilter(overlays, 1920, 1080, 1920, 1080, 2, 'screen', 'landscape');
+    const result = buildOverlayFilter(overlays, 1920, 1080, 1920, 1080, 2, 'screen', 'landscape', 20);
     // First segment: fade-in only (no fade-out since next is same media)
     expect(result.filterParts[0]).toContain('fade=in');
     expect(result.filterParts[0]).not.toContain('fade=out');
     // Second segment: fade-out only (no fade-in since prev is same media)
     expect(result.filterParts[2]).not.toContain('fade=in');
+    expect(result.filterParts[2]).toContain('fade=out');
+  });
+
+  test('buildOverlayFilter skips fade-in at video start and fade-out at video end', () => {
+    const overlays = [
+      { id: 'o1', mediaPath: 'a.png', mediaType: 'image', startTime: 0, endTime: 5, sourceStart: 0, sourceEnd: 5,
+        landscape: { x: 100, y: 100, width: 400, height: 300 }, reel: { x: 0, y: 0, width: 200, height: 150 } },
+      { id: 'o2', mediaPath: 'b.png', mediaType: 'image', startTime: 7, endTime: 10, sourceStart: 0, sourceEnd: 3,
+        landscape: { x: 200, y: 200, width: 300, height: 200 }, reel: { x: 0, y: 0, width: 150, height: 100 } }
+    ];
+    const result = buildOverlayFilter(overlays, 1920, 1080, 1920, 1080, 2, 'screen', 'landscape', 10);
+    // First overlay starts at 0 → no fade-in, but should fade-out (not at video end)
+    expect(result.filterParts[0]).not.toContain('fade=in');
+    expect(result.filterParts[0]).toContain('fade=out');
+    // Second overlay ends at 10 (= timeline duration) → fade-in, but no fade-out
+    expect(result.filterParts[2]).toContain('fade=in');
+    expect(result.filterParts[2]).not.toContain('fade=out');
+  });
+
+  test('buildOverlayFilter uses absolute times for position interpolation expressions', () => {
+    const overlays = [
+      { id: 'o1', mediaPath: 'img.png', mediaType: 'image', startTime: 4, endTime: 9, sourceStart: 0, sourceEnd: 5,
+        landscape: { x: 100, y: 100, width: 400, height: 300 }, reel: { x: 0, y: 0, width: 200, height: 150 } },
+      { id: 'o2', mediaPath: 'img.png', mediaType: 'image', startTime: 9, endTime: 14, sourceStart: 0, sourceEnd: 5,
+        landscape: { x: 500, y: 300, width: 400, height: 300 }, reel: { x: 0, y: 0, width: 200, height: 150 } }
+    ];
+    const result = buildOverlayFilter(overlays, 1920, 1080, 1920, 1080, 2, 'screen', 'landscape');
+    // The first segment's overlay filter should use absolute endTime (9.0) not relative duration (5.0)
+    // Position animation should happen at t=8.700 to t=9.000 (last 0.3s of segment)
+    const overlayExpr = result.filterParts[1];
+    expect(overlayExpr).toContain('8.700');
+    expect(overlayExpr).toContain('9.000');
+    // Should NOT use relative duration-based thresholds
+    expect(overlayExpr).not.toContain('gte(t,5.000)');
+    expect(overlayExpr).not.toContain('gte(t,4.700)');
+  });
+
+  test('buildOverlayFilter handles overlays on different tracks with time overlap', () => {
+    const overlays = [
+      { id: 'o1', mediaPath: 'a.png', mediaType: 'image', trackIndex: 0,
+        startTime: 0, endTime: 10, sourceStart: 0, sourceEnd: 10,
+        landscape: { x: 100, y: 100, width: 400, height: 300 }, reel: { x: 0, y: 0, width: 200, height: 150 } },
+      { id: 'o2', mediaPath: 'b.png', mediaType: 'image', trackIndex: 1,
+        startTime: 5, endTime: 15, sourceStart: 0, sourceEnd: 10,
+        landscape: { x: 600, y: 200, width: 300, height: 200 }, reel: { x: 50, y: 50, width: 150, height: 100 } }
+    ];
+    const result = buildOverlayFilter(overlays, 1920, 1080, 1920, 1080, 2, 'screen', 'landscape');
+    // Both overlays produce filters — track 0 first, track 1 on top
+    expect(result.inputs.length).toBe(2);
+    expect(result.filterParts.length).toBe(4); // 2 prep + 2 overlay
+    expect(result.filterParts[1]).toContain("enable='between(t,0.000,10.000)'");
+    expect(result.filterParts[3]).toContain("enable='between(t,5.000,15.000)'");
+  });
+
+  test('buildOverlayFilter does not detect same-media transition across tracks', () => {
+    const overlays = [
+      { id: 'o1', mediaPath: 'img.png', mediaType: 'image', trackIndex: 0,
+        startTime: 2, endTime: 7, sourceStart: 0, sourceEnd: 5,
+        landscape: { x: 100, y: 100, width: 400, height: 300 }, reel: { x: 0, y: 0, width: 200, height: 150 } },
+      { id: 'o2', mediaPath: 'img.png', mediaType: 'image', trackIndex: 1,
+        startTime: 7, endTime: 12, sourceStart: 0, sourceEnd: 5,
+        landscape: { x: 500, y: 300, width: 400, height: 300 }, reel: { x: 0, y: 0, width: 200, height: 150 } }
+    ];
+    const result = buildOverlayFilter(overlays, 1920, 1080, 1920, 1080, 2, 'screen', 'landscape', 20);
+    // Both segments should have both fade-in AND fade-out (no transition suppression across tracks)
+    expect(result.filterParts[0]).toContain('fade=in');
+    expect(result.filterParts[0]).toContain('fade=out');
+    expect(result.filterParts[2]).toContain('fade=in');
     expect(result.filterParts[2]).toContain('fade=out');
   });
 });

@@ -459,6 +459,66 @@ describe('shared/domain/project', () => {
     expect(result[0].id).toBe('a');
   });
 
+  test('normalizeOverlays defaults trackIndex to 0 when missing', () => {
+    const result = normalizeOverlays([
+      { id: 'o1', mediaPath: 'img.png', mediaType: 'image', startTime: 0, endTime: 5 }
+    ]);
+    expect(result[0].trackIndex).toBe(0);
+  });
+
+  test('normalizeOverlays preserves valid trackIndex', () => {
+    const result = normalizeOverlays([
+      { id: 'o1', mediaPath: 'img.png', mediaType: 'image', startTime: 0, endTime: 5, trackIndex: 1 }
+    ]);
+    expect(result[0].trackIndex).toBe(1);
+  });
+
+  test('normalizeOverlays clamps trackIndex to valid range', () => {
+    const result = normalizeOverlays([
+      { id: 'o1', mediaPath: 'img.png', mediaType: 'image', startTime: 0, endTime: 5, trackIndex: 5 },
+      { id: 'o2', mediaPath: 'img2.png', mediaType: 'image', startTime: 6, endTime: 10, trackIndex: -1 }
+    ]);
+    // o2 (trackIndex: -1 → 0) comes first in output, then o1 (trackIndex: 5 → 1)
+    const o2 = result.find(o => o.id === 'o2');
+    const o1 = result.find(o => o.id === 'o1');
+    expect(o2.trackIndex).toBe(0); // negative → default 0
+    expect(o1.trackIndex).toBe(1); // clamped to MAX_OVERLAY_TRACKS - 1
+  });
+
+  test('normalizeOverlays enforces no-overlap per track, not globally', () => {
+    const result = normalizeOverlays([
+      { id: 'a', mediaPath: 'a.png', mediaType: 'image', startTime: 2, endTime: 8, trackIndex: 0 },
+      { id: 'b', mediaPath: 'b.png', mediaType: 'image', startTime: 5, endTime: 12, trackIndex: 1 }
+    ]);
+    // Different tracks — both preserved without trimming
+    expect(result.length).toBe(2);
+    expect(result[0].id).toBe('a');
+    expect(result[0].startTime).toBe(2);
+    expect(result[1].id).toBe('b');
+    expect(result[1].startTime).toBe(5); // not trimmed
+  });
+
+  test('normalizeOverlays enforces no-overlap within same track', () => {
+    const result = normalizeOverlays([
+      { id: 'a', mediaPath: 'a.png', mediaType: 'image', startTime: 2, endTime: 8, trackIndex: 0 },
+      { id: 'b', mediaPath: 'b.png', mediaType: 'image', startTime: 5, endTime: 12, trackIndex: 0 }
+    ]);
+    expect(result.length).toBe(2);
+    expect(result[0].startTime).toBe(2);
+    expect(result[1].startTime).toBe(8); // trimmed to avoid overlap on same track
+  });
+
+  test('normalizeOverlays sorts output by trackIndex then startTime', () => {
+    const result = normalizeOverlays([
+      { id: 'c', mediaPath: 'c.png', mediaType: 'image', startTime: 3, endTime: 7, trackIndex: 1 },
+      { id: 'a', mediaPath: 'a.png', mediaType: 'image', startTime: 10, endTime: 15, trackIndex: 0 },
+      { id: 'b', mediaPath: 'b.png', mediaType: 'image', startTime: 1, endTime: 5, trackIndex: 0 }
+    ]);
+    expect(result[0].id).toBe('b'); // track 0, earliest
+    expect(result[1].id).toBe('a'); // track 0, later
+    expect(result[2].id).toBe('c'); // track 1
+  });
+
   test('normalizeKeyframes includes autoTrack and autoTrackSmoothing', () => {
     const keyframes = normalizeKeyframes([
       { time: 0, pipX: 10, pipY: 20, autoTrack: true, autoTrackSmoothing: 0.3 },

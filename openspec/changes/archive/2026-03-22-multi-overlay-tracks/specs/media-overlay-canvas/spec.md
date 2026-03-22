@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Overlay drawn between screen and PIP in z-order
 
@@ -24,34 +24,6 @@ Each active overlay SHALL be drawn at the position and size stored in the curren
 - **WHEN** output mode is landscape, track 0 overlay has `landscape: { x: 100, y: 50, width: 400, height: 300 }`, and track 1 overlay has `landscape: { x: 800, y: 200, width: 300, height: 200 }`
 - **THEN** both overlays are drawn at their respective positions on the 1920×1080 canvas
 
-### Requirement: Overlay overflow visualization
-
-When an overlay extends beyond the canvas boundaries, the out-of-bounds portion SHALL be drawn with reduced opacity (alpha 0.3) in the editor. This provides visual feedback that the overflow region will be clipped in the render output.
-
-#### Scenario: Overlay partially off-screen right
-- **WHEN** an overlay is positioned at x=1700, width=400 (extends to x=2100, beyond 1920)
-- **THEN** the portion from x=1700 to x=1920 is drawn at full opacity, the portion from x=1920 to x=2100 is drawn at alpha 0.3
-
-#### Scenario: Overlay fully within canvas
-- **WHEN** an overlay is positioned entirely within 0-1920 horizontally and 0-1080 vertically
-- **THEN** the entire overlay is drawn at full opacity
-
-### Requirement: Overlay free-placement drag
-
-When the user clicks on a visible overlay on the canvas (and the overlay's segment is selected in the timeline), mouse drag SHALL move the overlay freely. The position is stored in the current mode's slot. This works identically for overlays on either track. `pushUndo()` SHALL be called before the first position change.
-
-#### Scenario: Drag overlay on track 1
-- **WHEN** a selected track 1 overlay is dragged from (200, 100) to (500, 300) in landscape mode
-- **THEN** `overlay.landscape.x` = 500, `overlay.landscape.y` = 300 — same behavior as track 0
-
-### Requirement: Overlay corner resize with aspect ratio lock
-
-When the user clicks near a corner of a visible selected overlay (within 20px hit area), mouse drag SHALL resize the overlay from that corner while maintaining the original aspect ratio. Works identically for overlays on either track. The opposite corner stays anchored. Minimum size SHALL be 50×50 pixels.
-
-#### Scenario: Resize overlay on track 0
-- **WHEN** the user drags the bottom-right corner of a track 0 overlay
-- **THEN** the overlay resizes with aspect ratio maintained, same as before
-
 ### Requirement: Overlay hit-testing priority
 
 When the user clicks on the editor canvas, hit-testing SHALL check track 1 overlay bounds FIRST, then track 0 overlay bounds, then PIP bounds. Higher track index has higher priority. Only the currently-selected overlay segment's canvas region responds to drag/resize.
@@ -68,17 +40,21 @@ When the user clicks on the editor canvas, hit-testing SHALL check track 1 overl
 - **WHEN** the user clicks on an overlay's canvas region but that overlay segment is not selected in the timeline
 - **THEN** the click does NOT start overlay drag (falls through to next layer in priority)
 
-### Requirement: Per-mode overlay position persistence
+### Requirement: Overlay free-placement drag
 
-When the user switches output mode (landscape ↔ reel), each overlay segment's position/size for the previous mode SHALL be preserved. The overlay is drawn at the new mode's stored position. If a mode slot has never been set, the default position (from creation) is used.
+When the user clicks on a visible overlay on the canvas (and the overlay's segment is selected in the timeline), mouse drag SHALL move the overlay freely. The position is stored in the current mode's slot. This works identically for overlays on either track. `pushUndo()` SHALL be called before the first position change.
 
-#### Scenario: Switch from landscape to reel
-- **WHEN** an overlay has been positioned at (200, 100) in landscape and the user switches to reel
-- **THEN** the overlay is drawn at its reel position (which may differ), and `landscape: { x: 200, y: 100, ... }` is preserved
+#### Scenario: Drag overlay on track 1
+- **WHEN** a selected track 1 overlay is dragged from (200, 100) to (500, 300) in landscape mode
+- **THEN** `overlay.landscape.x` = 500, `overlay.landscape.y` = 300 — same behavior as track 0
 
-#### Scenario: First switch to reel mode
-- **WHEN** an overlay was created in landscape mode and the user switches to reel for the first time
-- **THEN** the overlay uses its reel default position (set at creation time)
+### Requirement: Overlay corner resize with aspect ratio lock
+
+When the user clicks near a corner of a visible selected overlay (within 20px hit area), mouse drag SHALL resize the overlay from that corner while maintaining the original aspect ratio. Works identically for overlays on either track. The opposite corner stays anchored. Minimum size SHALL be 50×50 pixels.
+
+#### Scenario: Resize overlay on track 0
+- **WHEN** the user drags the bottom-right corner of a track 0 overlay
+- **THEN** the overlay resizes with aspect ratio maintained, same as before
 
 ### Requirement: Visual selection handles for active overlays
 

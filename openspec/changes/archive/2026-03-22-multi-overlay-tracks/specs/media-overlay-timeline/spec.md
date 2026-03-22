@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Overlay track rendered above section track
 
@@ -58,38 +58,6 @@ When an overlay segment is selected, trim handles SHALL appear on its left and r
 #### Scenario: Trim overlay right edge with neighbor on different track
 - **WHEN** the user drags the right trim handle of a track 0 overlay at 5-10s, and a track 1 overlay starts at 8s
 - **THEN** the track 1 overlay does NOT constrain the trim — they are on different tracks
-
-### Requirement: Overlay split at playhead
-
-When an overlay segment is selected and the user triggers split (same button/shortcut as section split), the overlay SHALL be split at the current playhead position into two segments. Both segments reference the same `mediaPath`. Each segment inherits the parent's position/size for both modes. For video overlays, `sourceEnd` of the first segment and `sourceStart` of the second segment are adjusted to the split point in source time.
-
-#### Scenario: Split image overlay
-- **WHEN** an image overlay (3-12s) is selected and playhead is at 7s, user triggers split
-- **THEN** two segments are created: [3-7s] and [7-12s], both with same mediaPath, same position/size
-
-#### Scenario: Split video overlay
-- **WHEN** a video overlay (3-12s, sourceStart=0, sourceEnd=9) is selected and playhead is at 7s
-- **THEN** segment 1: [3-7s, sourceStart=0, sourceEnd=4], segment 2: [7-12s, sourceStart=4, sourceEnd=9]
-
-#### Scenario: Split fails when playhead outside overlay
-- **WHEN** an overlay (5-10s) is selected but playhead is at 3s
-- **THEN** split does nothing (playhead not within overlay time range)
-
-### Requirement: Overlay delete
-
-When an overlay segment is selected and the user triggers delete, the segment SHALL be removed from the overlays array. The associated media file SHALL be staged for deletion only if no other overlay segments reference the same `mediaPath`. Undo SHALL restore the deleted segment.
-
-#### Scenario: Delete overlay with unique media
-- **WHEN** the only overlay referencing `overlay-media/img1.png` is deleted
-- **THEN** the segment is removed and `img1.png` is staged to `.deleted/`
-
-#### Scenario: Delete overlay with shared media
-- **WHEN** an overlay referencing `overlay-media/img1.png` is deleted, but another overlay also references it
-- **THEN** the segment is removed but `img1.png` is NOT staged (still referenced)
-
-#### Scenario: Undo overlay delete
-- **WHEN** an overlay delete is undone
-- **THEN** the segment is restored and the media file is unstaged from `.deleted/` if it was staged
 
 ### Requirement: No overlay overlap enforcement
 

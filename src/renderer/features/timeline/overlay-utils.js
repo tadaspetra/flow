@@ -7,9 +7,10 @@ const TRANSITION_DURATION = 0.3;
  * @param {number} time - current playhead time in seconds
  * @param {Array} overlays - normalized overlay segments
  * @param {string} outputMode - 'landscape' or 'reel'
+ * @param {number} [timelineDuration] - total timeline duration (used to skip fade at video boundaries)
  * @returns {{ active: boolean, overlayId?, mediaPath?, mediaType?, x?, y?, width?, height?, opacity?, sourceTime? }}
  */
-function getOverlayStateAtTime(time, overlays, outputMode) {
+function getOverlayStateAtTime(time, overlays, outputMode, timelineDuration) {
   if (!Array.isArray(overlays) || overlays.length === 0) {
     return { active: false };
   }
@@ -23,12 +24,17 @@ function getOverlayStateAtTime(time, overlays, outputMode) {
     const pos = o[mode] || { x: 0, y: 0, width: 400, height: 300 };
     let x = pos.x, y = pos.y, width = pos.width, height = pos.height;
 
+    // Skip fade-in if overlay starts at the beginning of the video
+    const atVideoStart = o.startTime < 0.01;
+    // Skip fade-out if overlay ends at or past the end of the video
+    const atVideoEnd = timelineDuration != null && o.endTime >= timelineDuration - 0.01;
+
     // Fade in/out
     let opacity = 1;
-    if (time < o.startTime + FADE) {
+    if (!atVideoStart && time < o.startTime + FADE) {
       opacity = Math.max(0, (time - o.startTime) / FADE);
     }
-    if (time > o.endTime - FADE) {
+    if (!atVideoEnd && time > o.endTime - FADE) {
       opacity = Math.min(opacity, Math.max(0, (o.endTime - time) / FADE));
     }
 

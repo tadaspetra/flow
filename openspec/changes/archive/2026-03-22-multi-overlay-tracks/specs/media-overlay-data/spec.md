@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Overlay segment data shape
 
@@ -76,14 +76,6 @@ The system SHALL provide a `normalizeOverlays(rawOverlays)` function that:
 - **WHEN** overlays exist on track 0 (at 5s, 10s) and track 1 (at 3s, 7s)
 - **THEN** the normalized array is sorted as: [track0@5s, track0@10s, track1@3s, track1@7s]
 
-### Requirement: Overlay ID generation
-
-The system SHALL provide a `generateOverlayId()` function that returns a unique string in the format `overlay-{timestamp}-{counter}` where timestamp is `Date.now()` and counter is a monotonically increasing integer. No two calls SHALL return the same ID within a session.
-
-#### Scenario: Generate unique overlay IDs
-- **WHEN** `generateOverlayId()` is called twice in rapid succession
-- **THEN** two different IDs are returned
-
 ### Requirement: No overlay time overlap
 
 The overlays array SHALL NOT contain two segments on the same track whose time ranges overlap. When adding or trimming an overlay, the system SHALL enforce that no two segments on the same `trackIndex` occupy the same time position. Segments on different tracks MAY overlap in time.
@@ -107,14 +99,3 @@ Overlay segments SHALL be stored in `project.timeline.overlays` and persisted wi
 #### Scenario: Project load restores overlays with backward compatibility
 - **WHEN** a project from before multi-track support is loaded (overlays have no `trackIndex`)
 - **THEN** all overlays are assigned `trackIndex: 0` and appear on track 0
-
-### Requirement: Default overlay position on creation
-
-When an overlay segment is created, its default position SHALL be:
-- **Landscape mode**: centered horizontally, centered vertically, width = 40% of 1920 = 768px, height derived from media aspect ratio
-- **Reel mode**: centered horizontally within 608px canvas, centered vertically, width = 70% of 608 = 426px, height derived from media aspect ratio
-- Both modes' positions are set simultaneously at creation time
-
-#### Scenario: Create overlay with landscape defaults
-- **WHEN** an image overlay (800×600 aspect ratio 4:3) is created in landscape mode
-- **THEN** `landscape.width` = 768, `landscape.height` = 576, `landscape.x` = (1920-768)/2 = 576, `landscape.y` = (1080-576)/2 = 252

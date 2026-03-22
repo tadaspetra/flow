@@ -427,7 +427,7 @@ function buildFilterComplex(
  * @param {string} outputMode - 'landscape' or 'reel'
  * @returns {{ inputs: string[][], filterParts: string[], outputLabel: string }}
  */
-function buildOverlayFilter(overlays, canvasW, canvasH, outW, outH, inputOffset, baseLabel, outputMode = 'landscape') {
+function buildOverlayFilter(overlays, canvasW, canvasH, outW, outH, inputOffset, baseLabel, outputMode = 'landscape', timelineDuration = 0) {
   if (!Array.isArray(overlays) || overlays.length === 0) {
     return { inputs: [], filterParts: [], outputLabel: baseLabel };
   }
@@ -482,17 +482,17 @@ function buildOverlayFilter(overlays, canvasW, canvasH, outW, outH, inputOffset,
     // Check if this segment has same-media neighbor — suppress fade at boundary
     const next = i < overlays.length - 1 ? overlays[i + 1] : null;
     const prev = i > 0 ? overlays[i - 1] : null;
-    const hasNextSameMedia = next && next.mediaPath === o.mediaPath && Math.abs(next.startTime - o.endTime) < 0.01;
-    const hasPrevSameMedia = prev && prev.mediaPath === o.mediaPath && Math.abs(o.startTime - prev.endTime) < 0.01;
+    const hasNextSameMedia = next && next.mediaPath === o.mediaPath && (next.trackIndex || 0) === (o.trackIndex || 0) && Math.abs(next.startTime - o.endTime) < 0.01;
+    const hasPrevSameMedia = prev && prev.mediaPath === o.mediaPath && (prev.trackIndex || 0) === (o.trackIndex || 0) && Math.abs(o.startTime - prev.endTime) < 0.01;
 
-    if (!hasNextSameMedia && !hasPrevSameMedia) {
-      prepParts.push(fadeIn);
-      prepParts.push(fadeOut);
-    } else if (!hasPrevSameMedia) {
-      prepParts.push(fadeIn);
-    } else if (!hasNextSameMedia) {
-      prepParts.push(fadeOut);
-    }
+    // Skip fade-in at video start, skip fade-out at video end
+    const atVideoStart = o.startTime < 0.01;
+    const atVideoEnd = timelineDuration > 0 && o.endTime >= timelineDuration - 0.01;
+    const shouldFadeIn = !atVideoStart && !hasPrevSameMedia;
+    const shouldFadeOut = !atVideoEnd && !hasNextSameMedia;
+
+    if (shouldFadeIn) prepParts.push(fadeIn);
+    if (shouldFadeOut) prepParts.push(fadeOut);
 
     filterParts.push(`${overlayInputLabel}${prepParts.join(',')}[${prepLabel}]`);
 
@@ -506,8 +506,9 @@ function buildOverlayFilter(overlays, canvasW, canvasH, outW, outH, inputOffset,
       const nextRenderX = Math.round(nextPos.x * scaleX);
       const nextRenderY = Math.round(nextPos.y * scaleY);
       if (nextRenderX !== renderX || nextRenderY !== renderY) {
-        const tStart = (duration - FADE).toFixed(3);
-        const tEnd = duration.toFixed(3);
+        // Use absolute times — t in overlay filter x/y expressions is the main stream's timestamp
+        const tStart = (o.endTime - FADE).toFixed(3);
+        const tEnd = o.endTime.toFixed(3);
         xExpr = `if(gte(t,${tEnd}),${nextRenderX},if(gte(t,${tStart}),${renderX}+(${nextRenderX}-${renderX})*(t-${tStart})/${FADE.toFixed(3)},${renderX}))`;
         yExpr = `if(gte(t,${tEnd}),${nextRenderY},if(gte(t,${tStart}),${renderY}+(${nextRenderY}-${renderY})*(t-${tStart})/${FADE.toFixed(3)},${renderY}))`;
         useEvalFrame = true;

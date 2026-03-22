@@ -115,7 +115,8 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
     const editorTimelineWrapper = document.getElementById('editorTimelineWrapper');
     const editorTimeline = document.getElementById('editorTimeline');
     const editorSectionMarkers = document.getElementById('editorSectionMarkers');
-    const editorOverlayTrack = document.getElementById('editorOverlayTrack');
+    const editorOverlayTrack0 = document.getElementById('editorOverlayTrack0');
+    const editorOverlayTrack1 = document.getElementById('editorOverlayTrack1');
     const editorScrubber = document.getElementById('editorScrubber');
     const editorSectionTranscriptList = document.getElementById('editorSectionTranscriptList');
     let editorRenderTimeout = null;
@@ -492,8 +493,8 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
     let takeVideoPool = new Map(); // takeId -> { screen: HTMLVideoElement, camera: HTMLVideoElement|null }
     const overlayImageCache = new Map(); // mediaPath -> HTMLImageElement
     const mouseTrailCache = new Map(); // takeId -> { captureWidth, captureHeight, trail }
-    let overlayVideoEl = null; // single reusable <video> for overlay playback
-    let overlayVideoCurrentPath = null;
+    const overlayVideoEls = [null, null]; // per-track reusable <video> elements
+    const overlayVideoCurrentPaths = [null, null];
     let activeTakeId = null;
     let activePlaybackSection = null;
     let cameraResyncCooldownUntil = 0;
@@ -614,17 +615,17 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       return img;
     }
 
-    function getOverlayVideoElement(mediaPath) {
-      if (!overlayVideoEl) {
-        overlayVideoEl = document.createElement('video');
-        overlayVideoEl.muted = true;
-        overlayVideoEl.preload = 'auto';
+    function getOverlayVideoElement(mediaPath, trackIdx = 0) {
+      if (!overlayVideoEls[trackIdx]) {
+        overlayVideoEls[trackIdx] = document.createElement('video');
+        overlayVideoEls[trackIdx].muted = true;
+        overlayVideoEls[trackIdx].preload = 'auto';
       }
-      if (overlayVideoCurrentPath !== mediaPath && activeProjectPath) {
-        overlayVideoEl.src = pathToFileUrl(`${activeProjectPath}/${mediaPath}`);
-        overlayVideoCurrentPath = mediaPath;
+      if (overlayVideoCurrentPaths[trackIdx] !== mediaPath && activeProjectPath) {
+        overlayVideoEls[trackIdx].src = pathToFileUrl(`${activeProjectPath}/${mediaPath}`);
+        overlayVideoCurrentPaths[trackIdx] = mediaPath;
       }
-      return overlayVideoEl;
+      return overlayVideoEls[trackIdx];
     }
 
     function formatProjectDate(value) {
@@ -912,13 +913,15 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       // Clean up overlay media state
       overlayImageCache.clear();
       mouseTrailCache.clear();
-      if (overlayVideoEl) {
-        overlayVideoEl.pause();
-        overlayVideoEl.removeAttribute('src');
-        overlayVideoEl.load();
-        overlayVideoEl = null;
+      for (let t = 0; t < overlayVideoEls.length; t++) {
+        if (overlayVideoEls[t]) {
+          overlayVideoEls[t].pause();
+          overlayVideoEls[t].removeAttribute('src');
+          overlayVideoEls[t].load();
+          overlayVideoEls[t] = null;
+        }
+        overlayVideoCurrentPaths[t] = null;
       }
-      overlayVideoCurrentPath = null;
       editorState = null;
       undoStack.length = 0;
       redoStack.length = 0;
@@ -1750,14 +1753,14 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
 
       // Place at its original time, push others if needed
       const duration = overlay.endTime - overlay.startTime;
-      const placed = placeOverlayAtTime(null, overlay.startTime, duration, editorState.duration);
+      const placed = placeOverlayAtTime(null, overlay.startTime, duration, editorState.duration, overlay.trackIndex || 0);
       if (placed !== null) {
         overlay.startTime = placed;
         overlay.endTime = placed + duration;
       }
 
       editorState.overlays.push(overlay);
-      editorState.overlays.sort((a, b) => a.startTime - b.startTime);
+      editorState.overlays.sort((a, b) => (a.trackIndex || 0) - (b.trackIndex || 0) || a.startTime - b.startTime);
       editorState.selectedOverlayId = overlay.id;
       renderOverlayMarkers();
       renderOverlayList();
@@ -1920,9 +1923,14 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
     }
 
     function renderOverlayMarkers() {
-      if (!editorOverlayTrack) return;
-      editorOverlayTrack.innerHTML = '';
-      if (!editorState || !editorState.duration || !Array.isArray(editorState.overlays) || editorState.overlays.length === 0) return;
+      if (!editorOverlayTrack0 || !editorOverlayTrack1) return;
+      editorOverlayTrack0.innerHTML = '';
+      editorOverlayTrack1.innerHTML = '';
+      if (!editorState || !editorState.duration || !Array.isArray(editorState.overlays) || editorState.overlays.length === 0) {
+        updateOverlaySizeControl();
+        if (activeSidebarTab === 'overlays') renderOverlayList();
+        return;
+      }
 
       for (const overlay of editorState.overlays) {
         const pctLeft = (overlay.startTime / editorState.duration) * 100;
@@ -1965,7 +1973,8 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
           band.appendChild(rightHandle);
         }
 
-        editorOverlayTrack.appendChild(band);
+        const trackEl = (overlay.trackIndex === 1) ? editorOverlayTrack1 : editorOverlayTrack0;
+        trackEl.appendChild(band);
       }
       updateOverlaySizeControl();
       if (activeSidebarTab === 'overlays') renderOverlayList();
@@ -2007,9 +2016,10 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       const rect = editorTimeline.getBoundingClientRect();
       const pxPerSec = rect.width / editorState.duration;
       const deltaSec = (e.clientX - overlayTrimDragState.startX) / pxPerSec;
-      const idx = editorState.overlays.indexOf(overlay);
-      const prevEnd = idx > 0 ? editorState.overlays[idx - 1].endTime : 0;
-      const nextStart = idx < editorState.overlays.length - 1 ? editorState.overlays[idx + 1].startTime : editorState.duration;
+      const sameTrack = editorState.overlays.filter(o => (o.trackIndex || 0) === (overlay.trackIndex || 0));
+      const idxInTrack = sameTrack.indexOf(overlay);
+      const prevEnd = idxInTrack > 0 ? sameTrack[idxInTrack - 1].endTime : 0;
+      const nextStart = idxInTrack < sameTrack.length - 1 ? sameTrack[idxInTrack + 1].startTime : editorState.duration;
 
       if (overlayTrimDragState.edge === 'left') {
         const newStart = Math.max(prevEnd, Math.min(overlay.endTime - 0.1, overlayTrimDragState.originalStartTime + deltaSec));
@@ -2040,6 +2050,7 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       const splitSourceTime = overlay.sourceStart + (time - overlay.startTime);
       const newOverlay = {
         id: generateOverlayId(),
+        trackIndex: overlay.trackIndex || 0,
         mediaPath: overlay.mediaPath,
         mediaType: overlay.mediaType,
         startTime: time,
@@ -2091,9 +2102,10 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
      * @param {number} targetStart - desired start time
      * @param {number} duration - overlay duration
      * @param {number} maxTime - timeline end (editorState.duration)
+     * @param {number} [trackIndex=0] - track to check collisions on
      */
-    function placeOverlayAtTime(movingId, targetStart, duration, maxTime) {
-      const others = editorState.overlays.filter(o => o.id !== movingId);
+    function placeOverlayAtTime(movingId, targetStart, duration, maxTime, trackIndex = 0) {
+      const others = editorState.overlays.filter(o => o.id !== movingId && (o.trackIndex || 0) === trackIndex);
       const targetEnd = targetStart + duration;
 
       // Find overlapping overlays
@@ -3741,11 +3753,16 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       };
     }
 
-    function getOverlayStateAtTime(time) {
+    function getOverlayStateAtTime(time, trackIndex) {
       if (!editorState || !Array.isArray(editorState.overlays) || editorState.overlays.length === 0) {
         return { active: false };
       }
-      return _getOverlayStateAtTime(time, editorState.overlays, editorState.outputMode);
+      const dur = editorState.duration || 0;
+      if (trackIndex !== undefined) {
+        const trackOverlays = editorState.overlays.filter(o => (o.trackIndex || 0) === trackIndex);
+        return _getOverlayStateAtTime(time, trackOverlays, editorState.outputMode, dur);
+      }
+      return _getOverlayStateAtTime(time, editorState.overlays, editorState.outputMode, dur);
     }
 
     function getTimelineBoundaries() {
@@ -3912,7 +3929,7 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
           videos.camera.playbackRate = 1;
         }
       }
-      if (overlayVideoEl && !overlayVideoEl.paused) overlayVideoEl.pause();
+      for (const vel of overlayVideoEls) { if (vel && !vel.paused) vel.pause(); }
       editorPlayBtn.textContent = 'Play';
       // If a video-frame callback was pending it will never fire now that the
       // video is paused, so cancel it and restart the draw loop on the paused
@@ -3980,17 +3997,19 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
     }
 
     function syncOverlayVideo(time) {
-      const overlayState = getOverlayStateAtTime(time);
-      if (overlayState.active && overlayState.mediaType === 'video') {
-        const vid = getOverlayVideoElement(overlayState.mediaPath);
-        if (vid && Math.abs(vid.currentTime - overlayState.sourceTime) > 0.15) {
-          vid.currentTime = overlayState.sourceTime;
+      for (let trackIdx = 0; trackIdx < 2; trackIdx++) {
+        const overlayState = getOverlayStateAtTime(time, trackIdx);
+        if (overlayState.active && overlayState.mediaType === 'video') {
+          const vid = getOverlayVideoElement(overlayState.mediaPath, trackIdx);
+          if (vid && Math.abs(vid.currentTime - overlayState.sourceTime) > 0.15) {
+            vid.currentTime = overlayState.sourceTime;
+          }
+          if (editorState?.playing && vid.paused) {
+            vid.play().catch(() => {});
+          }
+        } else if (overlayVideoEls[trackIdx] && !overlayVideoEls[trackIdx].paused) {
+          overlayVideoEls[trackIdx].pause();
         }
-        if (editorState?.playing && vid.paused) {
-          vid.play().catch(() => {});
-        }
-      } else if (overlayVideoEl && !overlayVideoEl.paused) {
-        overlayVideoEl.pause();
       }
     }
 
@@ -4073,16 +4092,17 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       const effectiveW = isReel ? REEL_CANVAS_W : CANVAS_W;
       const currentPipSize = computePipSize(state.pipScale, effectiveW);
 
-      // Draw overlay media (between screen and PIP)
-      const overlayState = getOverlayStateAtTime(editorState.currentTime);
-      if (overlayState.active) {
+      // Draw overlay media (between screen and PIP) — per track, track 0 first (behind), track 1 on top
+      for (let trackIdx = 0; trackIdx < 2; trackIdx++) {
+        const overlayState = getOverlayStateAtTime(editorState.currentTime, trackIdx);
+        if (!overlayState.active) continue;
         const oX = overlayState.x + (isReel ? cropPixelX : 0);
         const oY = overlayState.y;
         const oW = overlayState.width;
         const oH = overlayState.height;
         const mediaEl = overlayState.mediaType === 'image'
           ? getOverlayImageElement(overlayState.mediaPath)
-          : getOverlayVideoElement(overlayState.mediaPath);
+          : getOverlayVideoElement(overlayState.mediaPath, trackIdx);
         if (mediaEl && (mediaEl.tagName !== 'IMG' || mediaEl.complete)) {
           editorCtx.save();
           editorCtx.globalAlpha = overlayState.opacity;
@@ -4094,10 +4114,8 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
           const inRight = Math.min(CANVAS_W, oX + oW);
           const inBottom = Math.min(CANVAS_H, oY + oH);
           if (oX < 0 || oY < 0 || oX + oW > CANVAS_W || oY + oH > CANVAS_H) {
-            // Clear the in-bounds part and redraw with reduced alpha for overflow
             editorCtx.globalAlpha = overlayState.opacity * 0.3;
             editorCtx.drawImage(mediaEl, oX, oY, oW, oH);
-            // Redraw the in-bounds part at full opacity
             if (inRight > inLeft && inBottom > inTop) {
               editorCtx.globalAlpha = overlayState.opacity;
               editorCtx.save();
@@ -4112,10 +4130,6 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
         }
         // Draw resize handles for selected overlay
         if (overlayState.overlayId === editorState.selectedOverlayId) {
-          const oX = overlayState.x + (isReel ? cropPixelX : 0);
-          const oY = overlayState.y;
-          const oW = overlayState.width;
-          const oH = overlayState.height;
           editorCtx.save();
           editorCtx.strokeStyle = 'rgba(129,140,248,0.8)';
           editorCtx.lineWidth = 2;
@@ -4293,9 +4307,14 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       const cropOffsetX = isReel ? reelCropXToPixelOffset(kf.reelCropX, kf.backgroundZoom, mousedownContentW) : 0;
 
       // Overlay hit-test (priority over everything — runs before selectEditorSection)
+      // Check track 1 first (higher z), then track 0
       if (editorState.selectedOverlayId) {
-        const overlayS = getOverlayStateAtTime(editorState.currentTime);
-        if (overlayS.active && overlayS.overlayId === editorState.selectedOverlayId) {
+        let overlayS = null;
+        for (let t = 1; t >= 0; t--) {
+          const s = getOverlayStateAtTime(editorState.currentTime, t);
+          if (s.active && s.overlayId === editorState.selectedOverlayId) { overlayS = s; break; }
+        }
+        if (overlayS) {
           const oX = overlayS.x + (isReel ? cropOffsetX : 0);
           const oY = overlayS.y;
           const oW = overlayS.width;
@@ -4584,8 +4603,12 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
         }
         return;
       }
-      const overlayS = getOverlayStateAtTime(editorState.currentTime);
-      if (!overlayS.active || overlayS.overlayId !== editorState.selectedOverlayId) {
+      let overlayS = null;
+      for (let t = 1; t >= 0; t--) {
+        const s = getOverlayStateAtTime(editorState.currentTime, t);
+        if (s.active && s.overlayId === editorState.selectedOverlayId) { overlayS = s; break; }
+      }
+      if (!overlayS) {
         editorCanvas.style.cursor = '';
         return;
       }
@@ -4629,7 +4652,7 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       e.dataTransfer.dropEffect = 'copy';
     });
 
-    editorCanvas.addEventListener('drop', async (e) => {
+    async function handleOverlayDrop(e) {
       e.preventDefault();
       if (!editorState || editorState.rendering || !activeProjectPath) return;
       const file = e.dataTransfer?.files?.[0];
@@ -4685,8 +4708,10 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
         const duration = isVideo ? 5 : 3;
         const sourceStart = 0;
 
+        const dropTrackIndex = e._overlayDropTrackIndex || 0;
+
         pushUndo();
-        const placedStart = placeOverlayAtTime(null, editorState.currentTime, duration, editorState.duration);
+        const placedStart = placeOverlayAtTime(null, editorState.currentTime, duration, editorState.duration, dropTrackIndex);
         if (placedStart === null) {
           undoStack.pop();
           updateUndoRedoButtons();
@@ -4698,6 +4723,7 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
 
         const overlay = {
           id: generateOverlayId(),
+          trackIndex: dropTrackIndex,
           mediaPath,
           mediaType,
           startTime,
@@ -4708,14 +4734,31 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
           reel: { x: Math.round((REEL_CANVAS_W - reelW) / 2), y: Math.round((REEL_CANVAS_H - aspectH(reelW)) / 2), width: reelW, height: aspectH(reelW) }
         };
         editorState.overlays.push(overlay);
-        editorState.overlays.sort((a, b) => a.startTime - b.startTime);
+        editorState.overlays.sort((a, b) => (a.trackIndex || 0) - (b.trackIndex || 0) || a.startTime - b.startTime);
         editorState.selectedOverlayId = overlay.id;
         renderOverlayMarkers();
         scheduleProjectSave();
       } catch (err) {
         console.error('Failed to import overlay media:', err);
       }
-    });
+    }
+
+    editorCanvas.addEventListener('drop', handleOverlayDrop);
+
+    // ===== Overlay track drop targets =====
+    for (const [trackEl, trackIdx] of [[editorOverlayTrack0, 0], [editorOverlayTrack1, 1]]) {
+      trackEl.addEventListener('dragover', (e) => {
+        if (!editorState || editorState.rendering) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      });
+      trackEl.addEventListener('drop', (e) => {
+        e.preventDefault();
+        // Tag the event with the track index and forward to the shared import handler
+        e._overlayDropTrackIndex = trackIdx;
+        handleOverlayDrop(e);
+      });
+    }
 
     // ===== Timeline scrubber =====
 
@@ -4741,8 +4784,11 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
           let overlayMoveDragStarted = false;
           const overlayMoveDuration = overlay.endTime - overlay.startTime;
           const overlayMoveOrigStart = overlay.startTime;
+          const overlayMoveOrigTrack = overlay.trackIndex || 0;
           let dragGhostEl = null;
           let lastDragTargetTime = overlay.startTime;
+          let lastDragTargetTrack = overlayMoveOrigTrack;
+          let currentGhostParent = null;
           pushUndo();
 
           const onMoveOverlay = (e2) => {
@@ -4751,17 +4797,38 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
             const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
             lastDragTargetTime = Math.max(0, Math.min(editorState.duration - overlayMoveDuration, pct * editorState.duration - overlayMoveDuration / 2));
 
-            // Show a floating ghost band at cursor position (above other overlays)
+            // Detect which track the mouse is hovering over
+            const rect0 = editorOverlayTrack0.getBoundingClientRect();
+            const rect1 = editorOverlayTrack1.getBoundingClientRect();
+            if (e2.clientY >= rect1.top && e2.clientY <= rect1.bottom) {
+              lastDragTargetTrack = 1;
+            } else if (e2.clientY >= rect0.top && e2.clientY <= rect0.bottom) {
+              lastDragTargetTrack = 0;
+            }
+            // else keep last known track
+
+            const targetTrackEl = lastDragTargetTrack === 1 ? editorOverlayTrack1 : editorOverlayTrack0;
+
+            // Show a floating ghost band at cursor position
             if (!dragGhostEl) {
               dragGhostEl = document.createElement('div');
               dragGhostEl.style.cssText = 'position:absolute;top:0;bottom:0;z-index:40;border-radius:3px;pointer-events:none;';
               dragGhostEl.style.backgroundColor = 'rgba(79,70,229,0.6)';
               dragGhostEl.style.boxShadow = '0 0 8px rgba(99,102,241,0.5)';
-              editorOverlayTrack.appendChild(dragGhostEl);
+              targetTrackEl.appendChild(dragGhostEl);
+              currentGhostParent = targetTrackEl;
               // Dim the original band
-              const origBand = editorOverlayTrack.querySelector(`[data-overlay-id="${overlayId}"]`);
+              const origTrackEl = overlayMoveOrigTrack === 1 ? editorOverlayTrack1 : editorOverlayTrack0;
+              const origBand = origTrackEl.querySelector(`[data-overlay-id="${overlayId}"]`);
               if (origBand) origBand.style.opacity = '0.25';
             }
+
+            // Move ghost to the target track row if changed
+            if (currentGhostParent !== targetTrackEl) {
+              targetTrackEl.appendChild(dragGhostEl);
+              currentGhostParent = targetTrackEl;
+            }
+
             const ghostLeft = (lastDragTargetTime / editorState.duration) * 100;
             const ghostWidth = (overlayMoveDuration / editorState.duration) * 100;
             dragGhostEl.style.left = ghostLeft + '%';
@@ -4778,12 +4845,14 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
               // Restore original position, then resolve collisions at drop position
               overlay.startTime = overlayMoveOrigStart;
               overlay.endTime = overlayMoveOrigStart + overlayMoveDuration;
-              const placed = placeOverlayAtTime(overlayId, lastDragTargetTime, overlayMoveDuration, editorState.duration);
+              // Update track if dragged to a different track
+              overlay.trackIndex = lastDragTargetTrack;
+              const placed = placeOverlayAtTime(overlayId, lastDragTargetTime, overlayMoveDuration, editorState.duration, lastDragTargetTrack);
               if (placed !== null) {
                 overlay.startTime = placed;
                 overlay.endTime = placed + overlayMoveDuration;
               }
-              editorState.overlays.sort((a, b) => a.startTime - b.startTime);
+              editorState.overlays.sort((a, b) => (a.trackIndex || 0) - (b.trackIndex || 0) || a.startTime - b.startTime);
               renderOverlayMarkers();
               scheduleProjectSave();
             } else {

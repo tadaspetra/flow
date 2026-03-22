@@ -596,6 +596,59 @@ describe('main/services/render-service', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test('renderComposite includes multi-track overlay media in correct order', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-multitrack-'));
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+    const overlayDir = path.join(tmpDir, 'overlay-media');
+    fs.mkdirSync(overlayDir, { recursive: true });
+    fs.writeFileSync(path.join(overlayDir, 'a.png'), 'fake-png', 'utf8');
+    fs.writeFileSync(path.join(overlayDir, 'b.png'), 'fake-png', 'utf8');
+
+    const execCalls = [];
+    await renderComposite(
+      {
+        outputFolder: tmpDir,
+        takes: [{ id: 't1', screenPath, cameraPath: null }],
+        sections: [{ takeId: 't1', sourceStart: 0, sourceEnd: 20 }],
+        keyframes: [{ time: 0, pipX: 0, pipY: 0, pipVisible: false, cameraFullscreen: false }],
+        pipSize: 300,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        screenFitMode: 'fill',
+        overlays: [
+          { id: 'o1', trackIndex: 0, mediaPath: 'overlay-media/a.png', mediaType: 'image',
+            startTime: 2, endTime: 7, sourceStart: 0, sourceEnd: 5,
+            landscape: { x: 100, y: 100, width: 400, height: 300 },
+            reel: { x: 0, y: 0, width: 200, height: 150 } },
+          { id: 'o2', trackIndex: 1, mediaPath: 'overlay-media/b.png', mediaType: 'image',
+            startTime: 4, endTime: 9, sourceStart: 0, sourceEnd: 5,
+            landscape: { x: 600, y: 200, width: 300, height: 200 },
+            reel: { x: 50, y: 50, width: 150, height: 100 } }
+        ]
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 777,
+        probeVideoFpsWithFfmpeg: async () => 30,
+        runFfmpeg: async ({ args }) => {
+          execCalls.push(args);
+        }
+      }
+    );
+
+    expect(execCalls).toHaveLength(1);
+    const argsStr = execCalls[0].join(' ');
+    // Both overlay images included as inputs
+    expect(argsStr).toContain('a.png');
+    expect(argsStr).toContain('b.png');
+    // Both enable expressions present (track 0 at 2-7s, track 1 at 4-9s)
+    expect(argsStr).toContain("enable='between(t,2.000,7.000)'");
+    expect(argsStr).toContain("enable='between(t,4.000,9.000)'");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   test('renderComposite uses auto-track mouse trail for zoompan expressions', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-autotrack-'));
     const screenPath = path.join(tmpDir, 'screen.webm');
