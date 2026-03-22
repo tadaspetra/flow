@@ -11,3 +11,4 @@ dist-smoke
 .claude/worktrees/*
 pnpm-lock.yaml
 package-lock.json
+working-desk.md

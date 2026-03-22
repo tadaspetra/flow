@@ -1246,8 +1246,6 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
         setWorkspaceView('recording');
       }
 
-      await ensureMediaInitialized();
-      if (activeWorkspaceView === 'recording') updatePreview();
       await window.electronAPI.projectSetLast(projectPath);
       updateWorkspaceHeader();
     }
@@ -1259,6 +1257,7 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       try { await updateScreenStream(); } catch (error) { console.warn('Screen source init failed:', error); }
       try { await updateCameraStream(); } catch (error) { console.warn('Camera source init failed:', error); }
       try { await updateAudioStream(); } catch (error) { console.warn('Audio source init failed:', error); }
+      if (activeWorkspaceView === 'recording') updatePreview();
     }
 
     async function syncContentProtection() {
@@ -5555,7 +5554,14 @@ import { cleanupAllMedia } from './features/media-cleanup.js';
       createProjectBtn.click();
     });
 
-    // Init
+    // Init — defensive cleanup for stale resources from a previous forced close
+    cleanupAllMedia({
+      recording, screenStream, cameraStream, audioStream,
+      recorders, screenRecInterval, audioSendInterval, timerInterval,
+      audioContext, scribeWorkletNode, scribeWs,
+      drawRAF, meterRAF, cancelEditorDrawLoop, stopAudioMeter
+    });
+
     setWorkspaceView('home');
     syncContentProtection();
     updateWorkspaceHeader();

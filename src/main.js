@@ -28,6 +28,9 @@ const { cleanupMouseTrailTimer } = registerIpcHandlers({
   getScribeToken
 });
 
+// Defensive cleanup for stale timer state from a previous hot-reload
+cleanupMouseTrailTimer();
+
 app.on('before-quit', () => {
   cleanupMouseTrailTimer();
 });

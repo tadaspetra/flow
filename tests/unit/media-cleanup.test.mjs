@@ -111,6 +111,30 @@ describe('cleanupAllMedia', () => {
     expect(() => cleanupAllMedia({})).not.toThrow();
   });
 
+  // Startup cleanup: on app init all refs are null/default — must be a safe no-op
+  test('startup cleanup with default-initialized refs is a no-op', () => {
+    const startupRefs = {
+      recording: false,
+      screenStream: null,
+      cameraStream: null,
+      audioStream: null,
+      recorders: [],
+      screenRecInterval: null,
+      audioSendInterval: null,
+      timerInterval: null,
+      audioContext: null,
+      scribeWorkletNode: null,
+      scribeWs: null,
+      drawRAF: null,
+      meterRAF: null,
+      cancelEditorDrawLoop: vi.fn(),
+      stopAudioMeter: vi.fn()
+    };
+    expect(() => cleanupAllMedia(startupRefs)).not.toThrow();
+    // Functions should still be called (idempotent) but nothing breaks
+    expect(globalThis.cancelAnimationFrame).not.toHaveBeenCalled();
+  });
+
   // Idempotency — double call
   test('double call does not throw', () => {
     const refs = makeFullRefs();

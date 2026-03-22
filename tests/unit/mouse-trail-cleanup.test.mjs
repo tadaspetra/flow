@@ -70,4 +70,11 @@ describe('cleanupMouseTrailTimer', () => {
     cleanupMouseTrailTimer();
     expect(() => cleanupMouseTrailTimer()).not.toThrow();
   });
+
+  // Startup cleanup: called immediately after registration, before any IPC
+  test('startup cleanup before any IPC messages is a safe no-op', () => {
+    // cleanupMouseTrailTimer is called right after registerIpcHandlers returns
+    // (simulates the main.js startup path) — no timer has been started yet
+    expect(() => cleanupMouseTrailTimer()).not.toThrow();
+  });
 });
