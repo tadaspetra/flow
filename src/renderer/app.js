@@ -23,6 +23,8 @@ import {
 } from './features/timeline/camera-sync.js';
 import {
   getRecorderOptions,
+  getRecorderTimesliceMs,
+  shouldRenderPreviewFrame,
   createCameraRecordingStream
 } from './features/recording/recorder-utils.js';
 
@@ -107,6 +109,7 @@ import {
     let analyser = null;
     let meterRAF = null;
     let drawRAF = null;
+    let lastCompositeDrawAt = 0;
     let saveFolder = '';
     let hideFromRecording = 'true';
     let activeProjectPath = '';
@@ -459,6 +462,7 @@ import {
       } else if (drawRAF) {
         cancelAnimationFrame(drawRAF);
         drawRAF = null;
+        lastCompositeDrawAt = 0;
       }
 
       if (showTimeline && editorState && !hasPendingEditorDraw()) {
@@ -1487,10 +1491,17 @@ import {
       recordBtn.disabled = !hasAny || !saveFolder;
 
       if (drawRAF) cancelAnimationFrame(drawRAF);
+      lastCompositeDrawAt = 0;
       if (hasAny) drawComposite();
     }
 
-    function drawComposite() {
+    function drawComposite(now = performance.now()) {
+      if (!shouldRenderPreviewFrame(now, lastCompositeDrawAt, recording)) {
+        drawRAF = requestAnimationFrame(drawComposite);
+        return;
+      }
+
+      lastCompositeDrawAt = now;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
@@ -1704,7 +1715,8 @@ import {
         }
       }
 
-      recorders.forEach(r => r.start());
+      const recorderTimesliceMs = getRecorderTimesliceMs();
+      recorders.forEach(r => r.start(recorderTimesliceMs));
       recording = true;
       updateWorkspaceHeader();
       recordBtn.textContent = 'Stop';
@@ -2343,6 +2355,7 @@ import {
     function enterEditor(rawSections, opts = {}) {
       // Stop live preview while timeline is active.
       if (drawRAF) { cancelAnimationFrame(drawRAF); drawRAF = null; }
+      lastCompositeDrawAt = 0;
       cancelEditorDrawLoop();
 
       // Reset timeline zoom
