@@ -44,9 +44,6 @@ function createProjectService({ app }) {
     const cameraPath = projectFolder
       ? toProjectAbsolutePath(projectFolder, rawTake.cameraPath)
       : rawTake.cameraPath || null;
-    const micPath = projectFolder
-      ? toProjectAbsolutePath(projectFolder, rawTake.micPath)
-      : rawTake.micPath || null;
     const recordedDuration = Number(rawTake.recordedDuration);
     const sections = normalizeSections(rawTake.sections);
     const trimSegments = Array.isArray(rawTake.trimSegments)
@@ -66,16 +63,12 @@ function createProjectService({ app }) {
 
     if (!screenPath || !fs.existsSync(screenPath)) return null;
     if (cameraPath && !fs.existsSync(cameraPath)) return null;
-    if (micPath && !fs.existsSync(micPath)) return null;
 
     return {
       id: typeof rawTake.id === 'string' && rawTake.id ? rawTake.id : `recovery-${Date.now()}`,
       createdAt: typeof rawTake.createdAt === 'string' ? rawTake.createdAt : new Date().toISOString(),
       screenPath,
       cameraPath,
-      micPath,
-      screenHasAudio: rawTake.screenHasAudio !== false,
-      screenHasAudibleAudio: !!rawTake.screenHasAudibleAudio,
       recordedDuration: Number.isFinite(recordedDuration) ? recordedDuration : 0,
       sections,
       trimSegments
@@ -99,8 +92,7 @@ function createProjectService({ app }) {
     const serializable = {
       ...normalized,
       screenPath: toProjectRelativePath(projectFolder, normalized.screenPath),
-      cameraPath: toProjectRelativePath(projectFolder, normalized.cameraPath),
-      micPath: toProjectRelativePath(projectFolder, normalized.micPath)
+      cameraPath: toProjectRelativePath(projectFolder, normalized.cameraPath)
     };
     writeJsonFile(getProjectRecoveryFilePath(projectFolder), serializable);
     return normalized;
@@ -145,8 +137,7 @@ function createProjectService({ app }) {
     serializable.takes = serializable.takes.map((take) => ({
       ...take,
       screenPath: toProjectRelativePath(projectFolder, take.screenPath),
-      cameraPath: toProjectRelativePath(projectFolder, take.cameraPath),
-      micPath: toProjectRelativePath(projectFolder, take.micPath)
+      cameraPath: toProjectRelativePath(projectFolder, take.cameraPath)
     }));
 
     writeJsonFile(getProjectFilePath(projectFolder), serializable);

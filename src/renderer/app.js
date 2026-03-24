@@ -25,23 +25,8 @@ import {
   getRecorderOptions,
   getRecorderTimesliceMs,
   shouldRenderPreviewFrame,
-  createCameraRecordingStream,
-  getScreenCaptureConstraints,
-  resolveCaptureDeviceAudioInput,
-  createRecordingStream,
-  createAudioRecordingStream,
-  hasAudibleAudioSamples,
-  extractAudibleAudioSegments,
-  mergeSectioningSegments
+  createCameraRecordingStream
 } from './features/recording/recorder-utils.js';
-import {
-  createTakePreviewMedia,
-  pauseTakePreviewMedia,
-  clearTakePreviewMedia,
-  seekTakePreviewMedia,
-  setTakePreviewPlaybackRate,
-  playTakePreviewMedia
-} from './features/recording/preview-media-utils.js';
 
     const projectHomeView = document.getElementById('projectHomeView');
     const workspaceHeader = document.getElementById('workspaceHeader');
@@ -118,8 +103,6 @@ import {
     let recorders = [];
     let recording = false;
     let screenRecInterval = null;
-    let pendingScreenHasAudio = true;
-    let pendingScreenHasAudibleAudio = false;
     let timerInterval = null;
     let startTime = 0;
     let audioContext = null;
@@ -133,8 +116,6 @@ import {
     let activeProject = null;
     let activeProjectSession = 0;
     let activeWorkspaceView = 'home';
-    let availableMediaDevices = [];
-    let pairedScreenAudioInputId = null;
     let saveDebounceTimer = null;
     let persistQueue = Promise.resolve();
     let mediaInitialized = false;
@@ -302,15 +283,31 @@ import {
       if (takeVideoPool.has(takeId)) return takeVideoPool.get(takeId);
       const take = activeProject?.takes?.find(t => t.id === takeId);
       if (!take) return null;
-      const entry = createTakePreviewMedia(take, { pathToFileUrl });
-      if (!entry?.screen) return null;
+      const screen = document.createElement('video');
+      screen.playsInline = true;
+      screen.preload = 'auto';
+      screen.src = pathToFileUrl(take.screenPath);
+      let camera = null;
+      if (take.cameraPath) {
+        camera = document.createElement('video');
+        camera.playsInline = true;
+        camera.muted = true;
+        camera.preload = 'auto';
+        camera.src = pathToFileUrl(take.cameraPath);
+      }
+      const entry = { screen, camera };
       takeVideoPool.set(takeId, entry);
       return entry;
     }
 
     function cleanupVideoPool() {
       for (const [, videos] of takeVideoPool) {
-        clearTakePreviewMedia(videos);
+        videos.screen.pause();
+        videos.screen.src = '';
+        if (videos.camera) {
+          videos.camera.pause();
+          videos.camera.src = '';
+        }
       }
       takeVideoPool.clear();
       takeAudioBufferCache.clear();
@@ -1362,7 +1359,6 @@ import {
       }
 
       const devices = await navigator.mediaDevices.enumerateDevices();
-      availableMediaDevices = devices;
       const sources = await window.electronAPI.getSources();
 
       screenSelect.innerHTML = '<option value="">None</option>';
@@ -1419,28 +1415,27 @@ import {
         screenStream = null;
         screenVideo.srcObject = null;
       }
-      pairedScreenAudioInputId = null;
 
       const sourceId = screenSelect.value;
       if (!sourceId) return;
 
-      const pairedAudioInput = resolveCaptureDeviceAudioInput(sourceId, availableMediaDevices);
-      if (pairedAudioInput?.deviceId) pairedScreenAudioInputId = pairedAudioInput.deviceId;
-
-      const screenConstraints = getScreenCaptureConstraints(sourceId, { pairedAudioInput });
-      if (!screenConstraints) return;
-
-      try {
-        screenStream = await navigator.mediaDevices.getUserMedia(screenConstraints);
-      } catch (error) {
-        const canRetryWithoutSystemAudio = screenConstraints.audio !== false;
-        if (!canRetryWithoutSystemAudio) throw error;
-
-        console.warn('Screen audio capture unavailable, falling back to video-only capture:', error);
-        pairedScreenAudioInputId = null;
-        screenStream = await navigator.mediaDevices.getUserMedia(
-          getScreenCaptureConstraints(sourceId, { includeSystemAudio: false })
-        );
+      if (sourceId.startsWith('device:')) {
+        const deviceId = sourceId.slice('device:'.length);
+        screenStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+        });
+      } else {
+        screenStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: sourceId,
+              maxFrameRate: 30
+            }
+          }
+        });
       }
       screenVideo.srcObject = screenStream;
     }
@@ -1625,52 +1620,6 @@ import {
       audioMeter.style.width = '0%';
     }
 
-    async function analyzeScreenAudioInBlob(blob, fallbackHasAudio = false) {
-      if (!fallbackHasAudio || !blob) {
-        return {
-          hasAudibleAudio: false,
-          segments: []
-        };
-      }
-
-      const AnalysisAudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
-      if (!AnalysisAudioContext) {
-        return {
-          hasAudibleAudio: fallbackHasAudio,
-          segments: []
-        };
-      }
-
-      let analysisContext = null;
-      try {
-        const arrayBuffer = await blob.arrayBuffer();
-        analysisContext = new AnalysisAudioContext();
-        const audioBuffer = await analysisContext.decodeAudioData(arrayBuffer.slice(0));
-        const channelDataList = [];
-        for (let channelIndex = 0; channelIndex < audioBuffer.numberOfChannels; channelIndex += 1) {
-          channelDataList.push(audioBuffer.getChannelData(channelIndex));
-        }
-        return {
-          hasAudibleAudio: hasAudibleAudioSamples(channelDataList),
-          segments: extractAudibleAudioSegments(channelDataList, audioBuffer.sampleRate)
-        };
-      } catch (error) {
-        console.warn('Failed to analyze screen audio, falling back to speech-only cuts:', error);
-        return {
-          hasAudibleAudio: fallbackHasAudio,
-          segments: []
-        };
-      } finally {
-        if (analysisContext && typeof analysisContext.close === 'function') {
-          try {
-            await analysisContext.close();
-          } catch (_error) {
-            // Ignore close failures for short-lived analysis contexts.
-          }
-        }
-      }
-    }
-
     // Recording
     function toggleRecording() {
       if (!recording) startRecording();
@@ -1681,8 +1630,7 @@ import {
       const chunks = [];
       const recorderOptions = getRecorderOptions({
         suffix,
-        hasAudio: typeof stream?.getAudioTracks === 'function' && stream.getAudioTracks().length > 0,
-        hasVideo: typeof stream?.getVideoTracks === 'function' && stream.getVideoTracks().length > 0
+        hasAudio: typeof stream?.getAudioTracks === 'function' && stream.getAudioTracks().length > 0
       });
       const recorder = new MediaRecorder(stream, recorderOptions);
       console.log(`[Recorder] ${suffix} configured`, {
@@ -1700,8 +1648,7 @@ import {
       // blobPromise resolves with { blob, path } when recording stops
       recorder.blobPromise = new Promise((resolve) => {
         recorder.onstop = async () => {
-          const blobType = recorder.mimeType || recorderOptions.mimeType || 'video/webm';
-          const blob = new Blob(chunks, { type: blobType });
+          const blob = new Blob(chunks, { type: 'video/webm' });
           const buffer = await blob.arrayBuffer();
           const savedPath = await window.electronAPI.saveVideo(buffer, saveFolder, suffix);
           if (savedPath) console.log('Saved:', savedPath);
@@ -1711,6 +1658,15 @@ import {
 
       recorder.suffix = suffix;
       return recorder;
+    }
+
+    function addAudioToStream(stream) {
+      if (!audioStream) return stream;
+      const combined = new MediaStream([
+        ...stream.getVideoTracks(),
+        ...audioStream.getAudioTracks()
+      ]);
+      return combined;
     }
 
     function mergeInt16Arrays(arrays) {
@@ -1728,12 +1684,10 @@ import {
     async function startRecording() {
       if (!activeProjectPath) return;
       recorders = [];
-      pendingScreenHasAudio = true;
-      pendingScreenHasAudibleAudio = false;
       speechSegments = [];
       audioChunkBuffer = [];
 
-      // Individual screen (system audio only; mic records separately)
+      // Individual screen (with audio)
       // Route through a canvas at constant 30fps to prevent keyframe flicker
       // from variable frame rate desktop capture input
       if (screenStream) {
@@ -1747,15 +1701,11 @@ import {
         screenRecInterval = setInterval(() => {
           recCtx.drawImage(screenVideo, 0, 0, recCanvas.width, recCanvas.height);
         }, 1000 / 30);
-        const screenOnly = createRecordingStream({
-          videoStream: recCanvas.captureStream(30),
-          systemAudioStream: screenStream
-        });
-        pendingScreenHasAudio = screenOnly.getAudioTracks().length > 0;
+        const screenOnly = addAudioToStream(recCanvas.captureStream(30));
         recorders.push(createRecorder(screenOnly, 'screen'));
       }
 
-      // Individual camera (video only; export uses screen/system audio plus optional mic)
+      // Individual camera (video only; export uses screen audio)
       if (cameraStream) {
         const cameraOnly = createCameraRecordingStream(cameraStream);
         if (cameraOnly) {
@@ -1763,15 +1713,6 @@ import {
           console.log('[Recorder] camera recording track settings:', cameraTrack?.getSettings?.() || {});
           recorders.push(createRecorder(cameraOnly, 'camera'));
         }
-      }
-
-      if (audioStream) {
-        const shouldRecordSeparateMic = !pairedScreenAudioInputId || audioSelect.value !== pairedScreenAudioInputId;
-        if (!shouldRecordSeparateMic) {
-          console.warn('Skipping separate mic recorder because capture-device audio is already paired to the screen source');
-        }
-        const micOnly = createAudioRecordingStream(audioStream);
-        if (shouldRecordSeparateMic && micOnly) recorders.push(createRecorder(micOnly, 'mic'));
       }
 
       const recorderTimesliceMs = getRecorderTimesliceMs();
@@ -1933,12 +1874,21 @@ import {
       const takeId = recoveryTake.id || `take-${Date.now()}`;
       const screenPath = recoveryTake.screenPath;
       const cameraPath = recoveryTake.cameraPath || null;
-      const micPath = recoveryTake.micPath || null;
-      const screenHasAudio = recoveryTake.screenHasAudio !== false;
-      const screenHasAudibleAudio = !!recoveryTake.screenHasAudibleAudio;
       let recoverySections = normalizeTakeSections(recoveryTake.sections, recoveryTake.recordedDuration);
+      const recoverySegments = Array.isArray(recoveryTake.trimSegments) ? recoveryTake.trimSegments : [];
+      const fallbackSections = buildRemappedSectionsFromSegments(recoverySegments);
 
       try {
+        if (recoverySegments.length > 0) {
+          const computed = await window.electronAPI.computeSections({
+            segments: recoverySegments
+          });
+          if (!matchesActiveProjectSession(projectSession)) return;
+          recoverySections = Array.isArray(computed?.sections) && computed.sections.length > 0
+            ? attachSectionTranscripts(computed.sections, fallbackSections)
+            : (fallbackSections.length > 0 ? fallbackSections : recoverySections);
+        }
+
         // Set takeId on all sections
         recoverySections = recoverySections.map(s => ({ ...s, takeId }));
 
@@ -1951,9 +1901,6 @@ import {
             duration: recoveryTake.recordedDuration,
             screenPath,
             cameraPath,
-            micPath,
-            screenHasAudio,
-            screenHasAudibleAudio,
             sections: recoverySections
           });
         }
@@ -2301,11 +2248,6 @@ import {
         results[r.suffix] = await r.blobPromise;
       }
 
-      const screenAudioAnalysis = results.screen
-        ? await analyzeScreenAudioInBlob(results.screen.blob, pendingScreenHasAudio)
-        : { hasAudibleAudio: false, segments: [] };
-      pendingScreenHasAudibleAudio = screenAudioAnalysis.hasAudibleAudio;
-
       recorders = [];
       recording = false;
       updateWorkspaceHeader();
@@ -2326,32 +2268,24 @@ import {
         const takeCreatedAt = new Date().toISOString();
         const screenPath = results.screen.path;
         const cameraPath = results.camera?.path || null;
-        const micPath = results.mic?.path || null;
-        const screenHasAudio = pendingScreenHasAudio;
-        const screenHasAudibleAudio = pendingScreenHasAudibleAudio;
-        const screenAudioSegments = screenAudioAnalysis.segments;
         let sectionsForTimeline = buildDefaultSectionsForDuration(recordedDuration);
 
         // Compute sections from speech segments (instant, no FFmpeg)
         const activeSegments = speechSegments.filter(s => !s.deleted);
         const fallbackSections = buildRemappedSectionsFromSegments(activeSegments);
-        const combinedSegments = mergeSectioningSegments(activeSegments, screenAudioSegments);
         await saveRecoveryTake({
           id: takeId,
           createdAt: takeCreatedAt,
           screenPath,
           cameraPath,
-          micPath,
-          screenHasAudio,
-          screenHasAudibleAudio,
           recordedDuration,
           sections: sectionsForTimeline,
           trimSegments: activeSegments
         });
-        if (combinedSegments.length > 0) {
+        if (activeSegments.length > 0) {
           try {
             const computed = await window.electronAPI.computeSections({
-              segments: combinedSegments
+              segments: activeSegments
             });
             sectionsForTimeline = Array.isArray(computed?.sections) && computed.sections.length > 0
               ? attachSectionTranscripts(computed.sections, fallbackSections)
@@ -2364,18 +2298,6 @@ import {
         } else if (hadScribe) {
           console.warn('No speech detected, using full recording');
         }
-        await saveRecoveryTake({
-          id: takeId,
-          createdAt: takeCreatedAt,
-          screenPath,
-          cameraPath,
-          micPath,
-          screenHasAudio,
-          screenHasAudibleAudio,
-          recordedDuration,
-          sections: sectionsForTimeline,
-          trimSegments: activeSegments
-        });
 
         // Set takeId on all sections
         sectionsForTimeline = sectionsForTimeline.map(s => ({ ...s, takeId }));
@@ -2389,9 +2311,6 @@ import {
             duration: recordedDuration,
             screenPath,
             cameraPath,
-            micPath,
-            screenHasAudio,
-            screenHasAudibleAudio,
             sections: sectionsForTimeline
           });
         }
@@ -2515,13 +2434,13 @@ import {
         activePlaybackSection = firstSection;
         const videos = getOrCreateTakeVideos(firstSection.takeId);
         if (videos) {
-          seekTakePreviewMedia(videos, {
-            sourceTime: firstSection.sourceStart,
-            cameraTime: resolveCameraPlaybackTargetTime(
+          videos.screen.currentTime = firstSection.sourceStart;
+          if (videos.camera) {
+            videos.camera.currentTime = resolveCameraPlaybackTargetTime(
               firstSection.sourceStart,
               editorState.cameraSyncOffsetMs
-            )
-          });
+            );
+          }
         }
       }
 
@@ -2695,19 +2614,17 @@ import {
       if (!sameTake && previousTakeId) {
         const previousVideos = getOrCreateTakeVideos(previousTakeId);
         if (previousVideos) {
-          pauseTakePreviewMedia(previousVideos);
-          setTakePreviewPlaybackRate(previousVideos, {
-            speed: 1,
-            hasCamera: editorState.hasCamera
-          });
+          previousVideos.screen.pause();
+          if (previousVideos.camera) {
+            previousVideos.camera.pause();
+            previousVideos.camera.playbackRate = 1;
+          }
         }
       }
 
       if (needsSeek) {
-        seekTakePreviewMedia(nextVideos, {
-          sourceTime: targetSourceTime,
-          cameraTime: targetCameraTime
-        });
+        nextVideos.screen.currentTime = targetSourceTime;
+        if (nextVideos.camera) nextVideos.camera.currentTime = targetCameraTime;
       }
 
       activeTakeId = nextSection.takeId;
@@ -2725,7 +2642,12 @@ import {
 
       if (opts.resumePlayback) {
         const speed = editorState.playbackSpeed || 1;
-        playTakePreviewMedia(nextVideos, { speed, hasCamera: editorState.hasCamera });
+        nextVideos.screen.playbackRate = speed;
+        if (nextVideos.screen.paused) nextVideos.screen.play().catch(() => {});
+        if (editorState.hasCamera && nextVideos.camera && nextVideos.camera.paused) {
+          nextVideos.camera.playbackRate = speed;
+          nextVideos.camera.play().catch(() => {});
+        }
       }
 
       return true;
@@ -2783,7 +2705,12 @@ import {
       if (activeTakeId) {
         const videos = getOrCreateTakeVideos(activeTakeId);
         if (videos) {
-          playTakePreviewMedia(videos, { speed, hasCamera: editorState.hasCamera });
+          videos.screen.playbackRate = speed;
+          videos.screen.play().catch(() => {});
+          if (editorState.hasCamera && videos.camera) {
+            videos.camera.playbackRate = speed;
+            videos.camera.play().catch(() => {});
+          }
         }
       }
       editorPlayBtn.textContent = 'Pause';
@@ -2793,8 +2720,12 @@ import {
       if (!editorState) return;
       editorState.playing = false;
       for (const [, videos] of takeVideoPool) {
-        pauseTakePreviewMedia(videos);
-        setTakePreviewPlaybackRate(videos, { speed: 1, hasCamera: editorState.hasCamera });
+        videos.screen.pause();
+        videos.screen.playbackRate = 1;
+        if (videos.camera) {
+          videos.camera.pause();
+          videos.camera.playbackRate = 1;
+        }
       }
       editorPlayBtn.textContent = 'Play';
     }
@@ -2813,10 +2744,10 @@ import {
       if (editorState.playing && activeTakeId) {
         const videos = getOrCreateTakeVideos(activeTakeId);
         if (videos) {
-          setTakePreviewPlaybackRate(videos, {
-            speed: editorState.playbackSpeed,
-            hasCamera: editorState.hasCamera
-          });
+          videos.screen.playbackRate = editorState.playbackSpeed;
+          if (editorState.hasCamera && videos.camera) {
+            videos.camera.playbackRate = editorState.playbackSpeed;
+          }
         }
       }
       updateEditorTimeDisplay();
@@ -3276,13 +3207,7 @@ import {
         for (const takeId of referencedTakeIds) {
           const take = activeProject?.takes?.find(t => t.id === takeId);
           if (take) {
-            takes.push({
-              id: take.id,
-              screenPath: take.screenPath,
-              cameraPath: take.cameraPath,
-              micPath: take.micPath || null,
-              screenHasAudio: take.screenHasAudio !== false
-            });
+            takes.push({ id: take.id, screenPath: take.screenPath, cameraPath: take.cameraPath });
           }
         }
 
