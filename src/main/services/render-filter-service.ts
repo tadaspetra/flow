@@ -146,15 +146,14 @@ export function buildCamFullAlphaExpr(keyframes: Keyframe[]): string {
 export function buildScreenFilter(
   keyframes: Keyframe[],
   screenFitMode: ScreenFitMode,
-  sourceWidth: number,
-  sourceHeight: number,
+  _sourceWidth: number,
+  _sourceHeight: number,
   canvasW: number,
-  _canvasH: number,
+  canvasH: number,
   outputLabel = '[screen]',
-  _screenPreprocessed = false,
   targetFps = 30,
 ): string {
-  const { outW, outH } = resolveOutputSize(canvasW, _canvasH);
+  const { outW, outH } = resolveOutputSize(canvasW, canvasH);
   const normalizedKeyframes = (Array.isArray(keyframes) ? keyframes : []).map(
     (keyframe) => ({
       ...keyframe,
@@ -229,7 +228,6 @@ export function buildFilterComplex(
   sourceHeight: number,
   canvasW: number,
   canvasH: number,
-  screenPreprocessed = false,
   targetFps = 30,
 ): string {
   const { outW, outH } = resolveOutputSize(canvasW, canvasH);
@@ -255,7 +253,6 @@ export function buildFilterComplex(
     canvasW,
     canvasH,
     '[screen]',
-    screenPreprocessed,
     targetFps,
   );
 

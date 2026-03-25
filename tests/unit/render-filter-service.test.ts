@@ -114,7 +114,7 @@ describe('main/services/render-filter-service', () => {
     expect(filter).toContain(":x='max(0,min(iw-iw/zoom,iw*(if(gte(it,2.000),0.750000");
   });
 
-  test('buildFilterComplex still scales screen when input is preprocessed', () => {
+  test('buildFilterComplex scales screen into the editor canvas', () => {
     const filter = buildFilterComplex(
       [
         { time: 0, pipX: 100, pipY: 100, pipVisible: true, cameraFullscreen: false },
@@ -125,8 +125,7 @@ describe('main/services/render-filter-service', () => {
       1920,
       1080,
       1920,
-      1080,
-      true
+      1080
     );
     expect(filter).toContain('scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080[screen]');
   });

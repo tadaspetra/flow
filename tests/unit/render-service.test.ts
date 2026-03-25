@@ -7,20 +7,26 @@ import { describe, expect, test } from 'vitest';
 import {
   assertFilePath,
   normalizeSectionInput,
-  renderComposite
+  renderComposite,
+  type RenderCompositeDeps
 } from '../../src/main/services/render-service';
+import type { FfmpegProgress } from '../../src/main/services/ffmpeg-runner';
 import type { Keyframe } from '../../src/shared/domain/project';
 
 type RunFfmpegCall = {
   ffmpegPath: string;
   args: string[];
-  onProgress?: (progress: {
-    status: string;
-    outTimeSec?: number;
-    frame?: number;
-    speed?: number;
-  }) => void;
+  onProgress?: (progress: FfmpegProgress) => void;
 };
+
+function createRunFfmpegStub(
+  effect: (call: RunFfmpegCall) => void | Promise<void> = async () => {}
+): NonNullable<RenderCompositeDeps['runFfmpeg']> {
+  return async ({ ffmpegPath = '', args = [], onProgress } = {}) => {
+    await effect({ ffmpegPath, args, onProgress });
+    return { stderr: '' };
+  };
+}
 
 describe('main/services/render-service', () => {
   test('normalizeSectionInput filters invalid sections', () => {
@@ -73,7 +79,7 @@ describe('main/services/render-service', () => {
         {
           ffmpegPath: '/usr/bin/ffmpeg',
           probeVideoFpsWithFfmpeg: async () => 30,
-          runFfmpeg: (async () => {}) as never
+          runFfmpeg: createRunFfmpegStub()
         }
       )
     ).rejects.toThrow(/Take missing not found/);
@@ -101,9 +107,9 @@ describe('main/services/render-service', () => {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 123,
         probeVideoFpsWithFfmpeg: async () => 29.97,
-        runFfmpeg: (async ({ ffmpegPath, args }: RunFfmpegCall) => {
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
-        }) as never
+        })
       }
     );
 
@@ -155,9 +161,9 @@ describe('main/services/render-service', () => {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 321,
         probeVideoFpsWithFfmpeg: async () => 30,
-        runFfmpeg: (async ({ ffmpegPath, args }: RunFfmpegCall) => {
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
-        }) as never
+        })
       }
     );
 
@@ -191,9 +197,9 @@ describe('main/services/render-service', () => {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 654,
         probeVideoFpsWithFfmpeg: async () => 30,
-        runFfmpeg: (async ({ ffmpegPath, args }: RunFfmpegCall) => {
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
-        }) as never
+        })
       }
     );
 
@@ -227,14 +233,14 @@ describe('main/services/render-service', () => {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 456,
         probeVideoFpsWithFfmpeg: async () => 30,
-        runFfmpeg: (async ({ ffmpegPath, args }: RunFfmpegCall) => {
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
-        }) as never
+        })
       }
     );
 
     const argString = execCalls[0].args.join(' ');
-    expect(argString).toContain("[screen_raw]setpts=PTS-STARTPTS[screen_base];[screen_base]zoompan=z='2.000'");
+    expect(argString).toContain("[screen_raw]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080[screen_base];[screen_base]zoompan=z='2.000'");
     expect(argString).toContain('[1:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,fps=fps=30[cv0]');
     expect(argString).not.toContain('scale=3840:2160,crop=1920:1080:960:540[cv0]');
   });
@@ -264,9 +270,9 @@ describe('main/services/render-service', () => {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 147,
         probeVideoFpsWithFfmpeg: async () => 30,
-        runFfmpeg: (async ({ ffmpegPath, args }: RunFfmpegCall) => {
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
-        }) as never
+        })
       }
     );
 
@@ -305,9 +311,9 @@ describe('main/services/render-service', () => {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 789,
         probeVideoFpsWithFfmpeg: async () => 30,
-        runFfmpeg: (async ({ ffmpegPath, args }: RunFfmpegCall) => {
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
-        }) as never
+        })
       }
     );
 
@@ -343,9 +349,9 @@ describe('main/services/render-service', () => {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 999,
         probeVideoFpsWithFfmpeg: async () => 30,
-        runFfmpeg: (async ({ ffmpegPath, args }: RunFfmpegCall) => {
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
-        }) as never
+        })
       }
     );
 
@@ -381,9 +387,9 @@ describe('main/services/render-service', () => {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 222,
         probeVideoFpsWithFfmpeg: async () => 30,
-        runFfmpeg: (async ({ ffmpegPath, args }: RunFfmpegCall) => {
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
-        }) as never
+        })
       }
     );
 
@@ -434,9 +440,9 @@ describe('main/services/render-service', () => {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 333,
         probeVideoFpsWithFfmpeg: async () => 30,
-        runFfmpeg: (async ({ ffmpegPath, args }: RunFfmpegCall) => {
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
-        }) as never
+        })
       }
     );
 
@@ -473,10 +479,10 @@ describe('main/services/render-service', () => {
         now: () => 444,
         probeVideoFpsWithFfmpeg: async () => 30,
         onProgress: (update) => updates.push(update),
-        runFfmpeg: (async ({ onProgress }: RunFfmpegCall) => {
-          onProgress!({ status: 'continue', outTimeSec: 2, frame: 48, speed: 1.1 });
-          onProgress!({ status: 'end', outTimeSec: 4, frame: 96, speed: 0.9 });
-        }) as never
+        runFfmpeg: createRunFfmpegStub(({ onProgress }) => {
+          onProgress!({ status: 'continue', outTimeSec: 2, frame: 48, speed: 1.1, fps: null, raw: {} });
+          onProgress!({ status: 'end', outTimeSec: 4, frame: 96, speed: 0.9, fps: null, raw: {} });
+        })
       }
     );
 

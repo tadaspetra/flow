@@ -2,7 +2,10 @@ import path from 'node:path';
 
 import { describe, expect, test, vi } from 'vitest';
 
-import { createWindow } from '../../src/main/app/create-window';
+import {
+  createWindow,
+  type BrowserWindowConstructor
+} from '../../src/main/app/create-window';
 
 describe('main/app/create-window', () => {
   test('uses the provided app root for preload and html paths', () => {
@@ -18,11 +21,11 @@ describe('main/app/create-window', () => {
     };
     const BrowserWindow = vi.fn(function BrowserWindow() {
       return browserWindowInstance;
-    });
+    }) as unknown as BrowserWindowConstructor;
     const appRootDir = path.join('/tmp', 'loop-dist');
 
     const win = createWindow({
-      BrowserWindow: BrowserWindow as never,
+      BrowserWindow,
       appRootDir
     });
 

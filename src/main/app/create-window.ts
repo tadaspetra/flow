@@ -14,7 +14,7 @@ interface ConsoleMessagePayload {
   sourceId: string;
 }
 
-type BrowserWindowConstructor = new (
+export type BrowserWindowConstructor = new (
   options: BrowserWindowConstructorOptions,
 ) => ElectronBrowserWindow;
 

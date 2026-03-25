@@ -1,6 +1,11 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import js from '@eslint/js';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
+
+const tsconfigRootDir = path.dirname(fileURLToPath(import.meta.url));
 
 export default [
   {
@@ -9,12 +14,21 @@ export default [
       'coverage/**',
       'dist/**',
       'out/**',
+      '.claude/worktrees/**',
       'playwright-report/**',
       'test-results/**'
     ]
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    files: ['**/*.{ts,tsx,js,mjs,cjs}'],
+    languageOptions: {
+      parserOptions: {
+        tsconfigRootDir
+      }
+    }
+  },
   {
     files: ['src/**/*.ts', 'tests/**/*.ts', 'vite.config.ts'],
     languageOptions: {

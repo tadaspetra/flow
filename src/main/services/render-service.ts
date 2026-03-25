@@ -21,7 +21,7 @@ import {
   buildScreenFilter,
 } from './render-filter-service';
 
-interface RenderSectionInput {
+export interface RenderSectionInput {
   takeId: string | null;
   sourceStart: number;
   sourceEnd: number;
@@ -30,13 +30,13 @@ interface RenderSectionInput {
   backgroundPanY: number;
 }
 
-interface RenderTakeInput {
+export interface RenderTakeInput {
   id: string;
   screenPath: string | null;
   cameraPath: string | null;
 }
 
-interface RenderCompositeOptions {
+export interface RenderCompositeOptions {
   takes?: RenderTakeInput[];
   sections?: unknown[];
   keyframes?: Keyframe[];
@@ -49,7 +49,7 @@ interface RenderCompositeOptions {
   outputFolder?: string;
 }
 
-interface RenderCompositeDeps {
+export interface RenderCompositeDeps {
   probeVideoFpsWithFfmpeg?: typeof probeVideoFpsWithFfmpeg;
   runFfmpeg?: typeof runFfmpeg;
   ffmpegPath?: string | null;
@@ -375,7 +375,6 @@ export async function renderComposite(
       sourceHeight,
       canvasW,
       canvasH,
-      true,
       targetFps,
     );
     const adaptedOverlay = overlayFilter
@@ -391,7 +390,6 @@ export async function renderComposite(
       canvasW,
       canvasH,
       '[out]',
-      true,
       targetFps,
     ).replace(/\[0:v\]/g, '[screen_raw]');
     filterParts.push(screenOnlyFilter);
