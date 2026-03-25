@@ -5,8 +5,8 @@
 - Set `ELEVENLABS_API_KEY` for realtime transcription token generation.
 
 ## Local Verification
-- `npm run build:styles`
-- `npm run check`
+- `pnpm run build:styles`
+- `pnpm run check`
 
 `check` runs:
 - lint (`eslint`)
@@ -20,4 +20,4 @@
 - Verifies style build, lint, typecheck, test suite, e2e smoke, packaging smoke.
 
 ## Packaging
-- Use `npm run package:smoke` as a release gate before publishing artifacts.
+- Use `pnpm run package:smoke` as a release gate before publishing artifacts.

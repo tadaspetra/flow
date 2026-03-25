@@ -77,12 +77,12 @@ Projects store timeline state, takes, and settings so you can come back later in
 ### Requirements
 
 - Node.js 22
-- npm
+- pnpm 10
 
 ### Install
 
 ```bash
-npm ci
+pnpm install --frozen-lockfile
 ```
 
 ### Configure environment
@@ -102,13 +102,13 @@ ELEVENLABS_API_KEY=your_key_here
 ### Run the app
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 For a regular local launch:
 
 ```bash
-npm start
+pnpm start
 ```
 
 ## Verification
@@ -116,7 +116,7 @@ npm start
 Use the full repo validation before opening a pull request:
 
 ```bash
-npm run check
+pnpm run check
 ```
 
 That runs:
@@ -131,11 +131,11 @@ That runs:
 Useful individual commands:
 
 ```bash
-npm run lint
-npm run typecheck
-npm run test
-npm run test:e2e
-npm run package:smoke
+pnpm run lint
+pnpm run typecheck
+pnpm run test
+pnpm run test:e2e
+pnpm run package:smoke
 ```
 
 ## Repository Guide
@@ -173,7 +173,7 @@ Before submitting changes:
 
 1. Keep changes focused and behavior-driven.
 2. Add or update tests when behavior changes.
-3. Run `npm run check`.
+3. Run `pnpm run check`.
 
 This repository treats production readiness seriously. If you change behavior, the expectation is that the tests prove it.
 

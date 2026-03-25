@@ -1,24 +1,25 @@
 {
   "name": "loop",
   "version": "1.0.0",
+  "packageManager": "pnpm@10.28.0",
   "main": "dist/main.js",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build:styles": "tailwindcss -i ./src/renderer/styles/tailwind.input.css -o ./src/renderer/styles/main.css --minify",
     "build:electron": "tsc -p tsconfig.build.json",
     "build:renderer": "vite build",
-    "build": "npm run clean && npm run build:styles && npm run build:electron && npm run build:renderer",
-    "start": "npm run build && electron .",
-    "dev": "npm run build && electron .",
+    "build": "pnpm clean && pnpm build:styles && pnpm build:electron && pnpm build:renderer",
+    "start": "pnpm build && electron .",
+    "dev": "pnpm build && electron .",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
-    "test:e2e": "npm run build && node tests/e2e/smoke-electron.test.mjs",
-    "package:smoke": "npm run build && node scripts/package-smoke.mjs",
-    "check": "npm run lint && npm run typecheck && npm run test && npm run test:e2e && npm run package:smoke"
+    "test:e2e": "pnpm build && node tests/e2e/smoke-electron.test.mjs",
+    "package:smoke": "pnpm build && node scripts/package-smoke.mjs",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e && pnpm package:smoke"
   },
   "devDependencies": {
     "@electron/packager": "^19.1.0",

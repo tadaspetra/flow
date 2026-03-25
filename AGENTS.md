@@ -34,7 +34,7 @@ For any non-trivial change, follow this order:
 - Shared normalization/domain logic belongs in `src/shared/`.
 - Main-process business logic belongs in `src/main/services/`, not in IPC registration or app bootstrap.
 - Renderer feature logic belongs in `src/renderer/features/`, not inline in `src/index.html`.
-- `src/preload.js` should remain a narrow bridge and not gain business logic.
+- `src/preload.ts` should remain a narrow bridge and not gain business logic.
 
 ## Architecture Guardrails
 
@@ -111,27 +111,27 @@ Use this rule when changing code:
 
 ## Required Commands
 
-Use npm only in this repo.
+Use pnpm only in this repo.
 
 Primary commands:
 
-- `npm run build:styles`
-- `npm run lint`
-- `npm run typecheck`
-- `npm run test`
-- `npm run test:e2e`
-- `npm run package:smoke`
-- `npm run check`
+- `pnpm run build:styles`
+- `pnpm run lint`
+- `pnpm run typecheck`
+- `pnpm run test`
+- `pnpm run test:e2e`
+- `pnpm run package:smoke`
+- `pnpm run check`
 
 Before finishing a substantive change, run:
 
-- `npm run check`
+- `pnpm run check`
 
-If `npm run check` is too slow during iteration, run a narrower loop while developing, but do not mark work complete until the full check passes.
+If `pnpm run check` is too slow during iteration, run a narrower loop while developing, but do not mark work complete until the full check passes.
 
 ## Build And Runtime Notes
 
-- Start the app with `npm run dev` or `npm start`, not raw `electron .`
+- Start the app with `pnpm dev` or `pnpm start`, not raw `electron .`
   - this ensures renderer styles are rebuilt first
 - Tailwind output is generated into `src/renderer/styles/main.css`
 - Do not reintroduce Tailwind CDN loading
@@ -165,7 +165,7 @@ A non-trivial task is not complete until all of the following are true:
 - implementation matches the tested behavior
 - no meaningful assertion was weakened just to get green results
 - docs were updated if contributor workflow or product behavior changed
-- `npm run check` passed
+- `pnpm run check` passed
 
 Every final handoff from an agent should clearly state:
 
@@ -181,7 +181,7 @@ When asking an agent to add or change a feature, prefer prompts that explicitly 
 - acceptance criteria first
 - tests first or tests alongside the change
 - code robustness over test weakening
-- `npm run check` before completion
+- `pnpm run check` before completion
 - a summary of the exact tests added
 
 Bad prompt shape:
@@ -190,7 +190,7 @@ Bad prompt shape:
 
 Better prompt shape:
 
-- "define the behavior, add the proving tests first, implement the feature, do not weaken tests, run `npm run check`, and report what tests were added"
+- "define the behavior, add the proving tests first, implement the feature, do not weaken tests, run `pnpm run check`, and report what tests were added"
 
 ## Code Quality Expectations
 
@@ -218,7 +218,7 @@ Default to:
 - smaller modules
 - stricter validation
 - shared domain logic
-- full `npm run check` before completion
+- full `pnpm run check` before completion
 
 ## Learned User Preferences
 
