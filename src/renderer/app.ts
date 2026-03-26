@@ -117,6 +117,7 @@ import {
     let recorders = [];
     let recording = false;
     let screenRecInterval = null;
+    let trackEndedCleanups = [];
     let timerInterval = null;
     let startTime = 0;
     let audioContext = null;
@@ -1879,6 +1880,31 @@ import {
         }
       }
 
+      // Monitor source tracks for unexpected disconnection during recording.
+      // If a critical track (screen, audio) ends, auto-stop to preserve what we have.
+      trackEndedCleanups = [];
+      const monitorTrack = (track, label, critical) => {
+        const handler = () => {
+          if (!recording) return;
+          console.warn(`[Recorder] ${label} track ended unexpectedly`);
+          if (critical) {
+            console.error(`[Recorder] Critical track lost (${label}), auto-stopping to save recording`);
+            stopRecording();
+          }
+        };
+        track.addEventListener('ended', handler);
+        trackEndedCleanups.push(() => track.removeEventListener('ended', handler));
+      };
+      if (screenStream) {
+        for (const t of screenStream.getTracks()) monitorTrack(t, 'screen', true);
+      }
+      if (cameraStream) {
+        for (const t of cameraStream.getTracks()) monitorTrack(t, 'camera', false);
+      }
+      if (audioStream) {
+        for (const t of audioStream.getTracks()) monitorTrack(t, 'audio', true);
+      }
+
       const recorderTimesliceMs = getRecorderTimesliceMs();
       recorders.forEach(r => r.start(recorderTimesliceMs));
       recording = true;
@@ -2409,6 +2435,10 @@ import {
       const recordedDuration = (Date.now() - startTime) / 1000;
       clearInterval(timerInterval);
 
+      // Remove track-ended listeners (no longer needed once we're stopping)
+      for (const cleanup of trackEndedCleanups) cleanup();
+      trackEndedCleanups = [];
+
       // Stop audio send interval
       if (audioSendInterval) {
         clearInterval(audioSendInterval);
@@ -2423,13 +2453,18 @@ import {
         scribeWorkletNode = null;
       }
 
-      // Send final commit and close WebSocket
+      // Send final commit and close WebSocket.
+      // Detach onmessage first so late-arriving transcripts cannot mutate
+      // speechSegments after we snapshot them for section computation.
       const hadScribe = !!scribeWs;
       scribeManualClose = true;
-      if (scribeWs && scribeWs.readyState === WebSocket.OPEN) {
-        scribeWs.send(JSON.stringify({ message_type: 'commit' }));
-        await new Promise(r => setTimeout(r, 1000));
-        scribeWs.close();
+      if (scribeWs) {
+        scribeWs.onmessage = null;
+        if (scribeWs.readyState === WebSocket.OPEN) {
+          scribeWs.send(JSON.stringify({ message_type: 'commit' }));
+          await new Promise(r => setTimeout(r, 1000));
+          scribeWs.close();
+        }
       }
       scribeWs = null;
       scribeLastFailureReason = null;

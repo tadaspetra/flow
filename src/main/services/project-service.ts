@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { App } from 'electron';
 
 import {
+  atomicWriteFileSync,
   ensureDirectory,
   fs,
   isDirectoryEmpty,
@@ -417,7 +418,19 @@ export function createProjectService({ app }: { app: Pick<App, 'getPath'> }) {
     ensureDirectory(folder);
     const filePath = path.join(folder, filename);
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-    fs.writeFileSync(filePath, Buffer.from(bytes));
+    const data = Buffer.from(bytes);
+
+    // Atomic write: temp file → rename to prevent partial files on crash
+    atomicWriteFileSync(filePath, data);
+
+    // Verify written file matches expected size
+    const stat = fs.statSync(filePath);
+    if (stat.size !== data.length) {
+      throw new Error(
+        `Recording file verification failed: expected ${data.length} bytes, got ${stat.size}`,
+      );
+    }
+
     return filePath;
   }
 

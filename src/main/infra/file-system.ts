@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -26,8 +27,34 @@ export function readJsonFile<T>(filePath: string, fallback: T): T {
 }
 
 export function writeJsonFile(filePath: string, data: unknown): void {
-  ensureDirectory(path.dirname(filePath));
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+  atomicWriteFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+}
+
+/**
+ * Write a file atomically: write to a temp file in the same directory,
+ * then rename into place. This prevents partial/corrupt files if the
+ * process crashes mid-write.
+ */
+export function atomicWriteFileSync(
+  filePath: string,
+  data: string | Buffer,
+  encoding?: BufferEncoding,
+): void {
+  const dir = path.dirname(filePath);
+  ensureDirectory(dir);
+  const tmpPath = path.join(dir, `.tmp-${crypto.randomBytes(6).toString('hex')}${path.extname(filePath)}`);
+  try {
+    if (encoding) {
+      fs.writeFileSync(tmpPath, data, encoding);
+    } else {
+      fs.writeFileSync(tmpPath, data);
+    }
+    fs.renameSync(tmpPath, filePath);
+  } catch (error) {
+    // Clean up temp file on failure
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw error;
+  }
 }
 
 export function isDirectoryEmpty(folderPath: string): boolean {

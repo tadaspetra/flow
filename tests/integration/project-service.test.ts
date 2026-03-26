@@ -157,6 +157,33 @@ describe('main/services/project-service integration', () => {
     expect(reopened.recoveryTake).toBeNull();
   });
 
+  test('saveVideo writes recording atomically and verifies file size', () => {
+    const created = service.createProject({ name: 'SaveVideo', parentFolder: sandbox.root });
+    const data = Buffer.alloc(1024, 0xab);
+    const savedPath = service.saveVideo(data, created.projectPath, 'screen');
+
+    expect(savedPath).toMatch(/recording-\d+-screen\.webm$/);
+    expect(fs.existsSync(savedPath)).toBe(true);
+
+    const written = fs.readFileSync(savedPath);
+    expect(written.length).toBe(1024);
+    expect(Buffer.compare(written, data)).toBe(0);
+
+    // No leftover temp files in the project folder
+    const files = fs.readdirSync(created.projectPath).filter(f => f.startsWith('.tmp-'));
+    expect(files).toHaveLength(0);
+  });
+
+  test('saveVideo accepts Uint8Array input', () => {
+    const created = service.createProject({ name: 'SaveVideoU8', parentFolder: sandbox.root });
+    const data = new Uint8Array([1, 2, 3, 4, 5]);
+    const savedPath = service.saveVideo(data, created.projectPath, 'camera');
+
+    expect(fs.existsSync(savedPath)).toBe(true);
+    const written = fs.readFileSync(savedPath);
+    expect(written.length).toBe(5);
+  });
+
   test('recent project metadata tracks last project and list', () => {
     const one = service.createProject({ name: 'One', parentFolder: sandbox.root });
     const two = service.createProject({ name: 'Two', parentFolder: sandbox.root });
