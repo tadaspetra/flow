@@ -241,7 +241,7 @@ describe('main/services/render-service', () => {
 
     const argString = execCalls[0].args.join(' ');
     expect(argString).toContain("[screen_raw]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080[screen_base];[screen_base]zoompan=z='2.000'");
-    expect(argString).toContain('[1:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,fps=fps=30[cv0]');
+    expect(argString).toContain('[1:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS[cv0]');
     expect(argString).not.toContain('scale=3840:2160,crop=1920:1080:960:540[cv0]');
   });
 
@@ -277,7 +277,7 @@ describe('main/services/render-service', () => {
     );
 
     const argString = execCalls[0].args.join(' ');
-    expect(argString).toContain('[1:v]trim=start=0.120:end=1.120,setpts=PTS-STARTPTS,tpad=start_mode=clone:start_duration=0.000:stop_mode=clone:stop_duration=0.120,trim=duration=1.000,setpts=PTS-STARTPTS,fps=fps=30[cv0]');
+    expect(argString).toContain('[1:v]trim=start=0.120:end=1.120,setpts=PTS-STARTPTS,tpad=start_mode=clone:start_duration=0.000:stop_mode=clone:stop_duration=0.120,trim=duration=1.000,setpts=PTS-STARTPTS[cv0]');
   });
 
   test('renderComposite applies clamped section pan to background crop', async () => {
@@ -399,10 +399,10 @@ describe('main/services/render-service', () => {
     expect(args.filter((value) => value === cameraPath)).toHaveLength(1);
 
     const argString = args.join(' ');
-    expect(argString).toContain('[0:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,fps=fps=30,setsar=1[sv0]');
-    expect(argString).toContain('[0:v]trim=start=1.000:end=2.000,setpts=PTS-STARTPTS,fps=fps=30,setsar=1[sv1]');
-    expect(argString).toContain('[1:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,fps=fps=30[cv0]');
-    expect(argString).toContain('[1:v]trim=start=1.000:end=2.000,setpts=PTS-STARTPTS,fps=fps=30[cv1]');
+    expect(argString).toContain('[0:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,setsar=1[sv0]');
+    expect(argString).toContain('[0:v]trim=start=1.000:end=2.000,setpts=PTS-STARTPTS,setsar=1[sv1]');
+    expect(argString).toContain('[1:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS[cv0]');
+    expect(argString).toContain('[1:v]trim=start=1.000:end=2.000,setpts=PTS-STARTPTS[cv1]');
   });
 
   test('renderComposite keeps reused input indexes stable across mixed take ordering', async () => {
@@ -448,12 +448,52 @@ describe('main/services/render-service', () => {
 
     const argString = execCalls[0].args.join(' ');
     expect(execCalls[0].args.filter((value) => value === '-i')).toHaveLength(4);
-    expect(argString).toContain('[0:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,fps=fps=30,setsar=1[sv0]');
-    expect(argString).toContain('[2:v]trim=start=1.000:end=2.000,setpts=PTS-STARTPTS,fps=fps=30,setsar=1[sv1]');
-    expect(argString).toContain('[0:v]trim=start=2.000:end=3.000,setpts=PTS-STARTPTS,fps=fps=30,setsar=1[sv2]');
-    expect(argString).toContain('[1:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,fps=fps=30[cv0]');
-    expect(argString).toContain('[3:v]trim=start=1.000:end=2.000,setpts=PTS-STARTPTS,fps=fps=30[cv1]');
-    expect(argString).toContain('[1:v]trim=start=2.000:end=3.000,setpts=PTS-STARTPTS,fps=fps=30[cv2]');
+    expect(argString).toContain('[0:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,setsar=1[sv0]');
+    expect(argString).toContain('[2:v]trim=start=1.000:end=2.000,setpts=PTS-STARTPTS,setsar=1[sv1]');
+    expect(argString).toContain('[0:v]trim=start=2.000:end=3.000,setpts=PTS-STARTPTS,setsar=1[sv2]');
+    expect(argString).toContain('[1:v]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS[cv0]');
+    expect(argString).toContain('[3:v]trim=start=1.000:end=2.000,setpts=PTS-STARTPTS[cv1]');
+    expect(argString).toContain('[1:v]trim=start=2.000:end=3.000,setpts=PTS-STARTPTS[cv2]');
+  });
+
+  test('renderComposite defers screen fps normalization until after concat to avoid per-section drift', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-fps-after-concat-'));
+    const outputDir = path.join(tmpDir, 'out');
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+
+    const execCalls: { bin: string; args: string[] }[] = [];
+    await renderComposite(
+      {
+        outputFolder: outputDir,
+        takes: [{ id: 'take-1', screenPath, cameraPath: null }],
+        sections: [
+          { takeId: 'take-1', sourceStart: 0, sourceEnd: 61.113 },
+          { takeId: 'take-1', sourceStart: 90.017, sourceEnd: 143.531 },
+          { takeId: 'take-1', sourceStart: 200.201, sourceEnd: 271.889 }
+        ],
+        keyframes: [{ time: 0, pipX: 10, pipY: 10, pipVisible: false, cameraFullscreen: false }] as Keyframe[],
+        pipSize: 300,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        screenFitMode: 'fill'
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 334,
+        probeVideoFpsWithFfmpeg: async () => 29.97,
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
+          execCalls.push({ bin: ffmpegPath, args });
+        })
+      }
+    );
+
+    const argString = execCalls[0].args.join(' ');
+    expect(argString).toContain('[0:v]trim=start=0.000:end=61.113,setpts=PTS-STARTPTS,setsar=1[sv0]');
+    expect(argString).toContain('[0:v]trim=start=90.017:end=143.531,setpts=PTS-STARTPTS,setsar=1[sv1]');
+    expect(argString).toContain('[0:v]trim=start=200.201:end=271.889,setpts=PTS-STARTPTS,setsar=1[sv2]');
+    expect(argString).toContain('[out]fps=fps=30:round=near[out_cfr]');
+    expect(argString).not.toContain('setpts=PTS-STARTPTS,fps=fps=30,setsar=1[sv');
   });
 
   test('renderComposite forwards mapped progress updates from ffmpeg output time', async () => {

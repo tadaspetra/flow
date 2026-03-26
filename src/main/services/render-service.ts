@@ -119,7 +119,7 @@ export function buildCameraTrimFilter(
   const label = `[cv${index}]`;
 
   if (!Number.isFinite(offsetSec) || Math.abs(offsetSec) < 0.0005) {
-    return `[${cameraIdx}:v]trim=start=${start.toFixed(3)}:end=${end.toFixed(3)},setpts=PTS-STARTPTS,fps=fps=${targetFps}${label}`;
+    return `[${cameraIdx}:v]trim=start=${start.toFixed(3)}:end=${end.toFixed(3)},setpts=PTS-STARTPTS${label}`;
   }
 
   const sampleStart = Math.max(0, start + offsetSec);
@@ -128,7 +128,7 @@ export function buildCameraTrimFilter(
   const startPad = Math.max(0, -offsetSec);
   const stopPad = Math.max(0, offsetSec);
 
-  return `[${cameraIdx}:v]trim=start=${sampleStart.toFixed(3)}:end=${sampleEnd.toFixed(3)},setpts=PTS-STARTPTS,tpad=start_mode=clone:start_duration=${startPad.toFixed(3)}:stop_mode=clone:stop_duration=${stopPad.toFixed(3)},trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS,fps=fps=${targetFps}${label}`;
+  return `[${cameraIdx}:v]trim=start=${sampleStart.toFixed(3)}:end=${sampleEnd.toFixed(3)},setpts=PTS-STARTPTS,tpad=start_mode=clone:start_duration=${startPad.toFixed(3)}:stop_mode=clone:stop_duration=${stopPad.toFixed(3)},trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS${label}`;
 }
 
 function buildInputPlan(
@@ -327,7 +327,7 @@ export async function renderComposite(
     const start = section.sourceStart.toFixed(3);
     const end = section.sourceEnd.toFixed(3);
     filterParts.push(
-      `[${screenIdx}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,fps=fps=${targetFps},setsar=1[sv${index}]`,
+      `[${screenIdx}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,setsar=1[sv${index}]`,
     );
     filterParts.push(
       `[${screenIdx}:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[sa${index}]`,
