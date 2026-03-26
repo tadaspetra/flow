@@ -225,6 +225,7 @@ Default to:
 - Prefer compact plans and concise summaries unless more depth is requested.
 - Prefer resilient recording stop/finalize behavior: if one recorder (e.g. camera) fails during finalize, do not wedge the whole flow; allow partial success where possible and surface a clear error instead of hanging.
 - When judging recording reliability, do not treat helper-only unit tests as sufficient proof for real `MediaRecorder`, device, or OS-level capture edge cases.
+- Prefer making live transcription failures visible (surface realtime close/error reasons from Scribe) rather than failing silently when the WebSocket drops.
 
 ## Learned Workspace Facts
 
@@ -232,3 +233,6 @@ Default to:
 - Editor PiP and similar overlay positions are authored in a fixed 1920×1080 canvas space; export/ffmpeg composition should use that same coordinate space so preview and rendered output stay aligned.
 - Same-screen system audio may require Electron display-media loopback (`getDisplayMedia` with main-process coordination); external capture-device paths are not a substitute for all desktop/window sources.
 - Screen and camera are separate capture/recorder pipelines; stop/save logic must tolerate independent outcomes so one stream cannot block finalization of the other.
+- Multi-section ffmpeg export should apply constant-FPS normalization after A/V concat/composition, not per-section before concat, so trimmed durations stay matched and export does not drift versus in-app preview.
+- Very long timelines with dense camera-overlay keyframes can produce extremely nested ffmpeg filter expressions that exceed parser limits and fail render; the overlay graph needs to stay bounded for long sessions.
+- `pnpm dev` runs the full build pipeline (clean, styles, main/preload compile, renderer bundle) then launches Electron; it is not a lightweight watch-only dev server unless that workflow is added separately.

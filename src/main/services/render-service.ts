@@ -57,6 +57,8 @@ export interface RenderCompositeDeps {
   onProgress?: (progress: RenderProgressUpdate) => void;
 }
 
+const MAX_OVERLAY_FILTER_LENGTH = 100000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -205,6 +207,13 @@ function getTotalDurationSec(sections: RenderSectionInput[]): number {
   return sections.reduce(
     (total, section) => total + Math.max(0, section.sourceEnd - section.sourceStart),
     0,
+  );
+}
+
+function assertOverlayFilterSize(filter: string): void {
+  if (filter.length <= MAX_OVERLAY_FILTER_LENGTH) return;
+  throw new Error(
+    'Render filter is too complex for ffmpeg. Reduce camera layout changes and try again.',
   );
 }
 
@@ -377,6 +386,7 @@ export async function renderComposite(
       canvasH,
       targetFps,
     );
+    assertOverlayFilterSize(overlayFilter);
     const adaptedOverlay = overlayFilter
       .replace(/\[0:v\]/g, '[screen_raw]')
       .replace(/\[1:v\]/g, '[camera_raw]');

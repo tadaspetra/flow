@@ -156,4 +156,40 @@ describe('main/services/render-filter-service', () => {
     expect(filter).toContain("overlay=x='1478':y='638'");
     expect(filter).toContain('scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080');
   });
+
+  test('buildAlphaExpr collapses redundant visibility anchors for long timelines', () => {
+    const keyframes = Array.from({ length: 240 }, (_, index) => ({
+      time: index * 15,
+      pipVisible: true
+    })) as Keyframe[];
+
+    expect(buildAlphaExpr(keyframes)).toBe('1');
+  });
+
+  test('buildFilterComplex keeps camera overlay expressions compact with many redundant anchors', () => {
+    const keyframes = Array.from({ length: 240 }, (_, index) => ({
+      time: index * 15,
+      pipX: 120,
+      pipY: 180,
+      pipVisible: true,
+      cameraFullscreen: false,
+      backgroundZoom: 1,
+      backgroundPanX: 0,
+      backgroundPanY: 0
+    })) as Keyframe[];
+
+    const filter = buildFilterComplex(
+      keyframes,
+      320,
+      'fill',
+      1920,
+      1080,
+      1920,
+      1080
+    );
+
+    expect(filter).toContain("overlay=x='120':y='180'");
+    expect(filter).not.toContain('if(gte(T,');
+    expect(filter.length).toBeLessThan(2000);
+  });
 });

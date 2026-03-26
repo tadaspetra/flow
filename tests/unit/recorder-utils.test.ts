@@ -2,11 +2,14 @@ import { describe, expect, test } from 'vitest';
 
 import {
   createCameraRecordingStream,
+  finalizeRecordingChunks,
   getRecorderOptions,
+  getRecorderFinalizeTimeoutMs,
   getRecorderTimesliceMs,
   getSupportedRecorderMimeType,
   PREVIEW_FPS_IDLE,
   PREVIEW_FPS_RECORDING,
+  RECORDER_FINALIZE_TIMEOUT_MS,
   RECORDER_MIME_CANDIDATES,
   RECORDER_TIMESLICE_MS,
   shouldRenderPreviewFrame
@@ -45,6 +48,11 @@ describe('recorder-utils', () => {
     expect(getRecorderTimesliceMs()).toBe(1000);
   });
 
+  test('uses a bounded wait when recorder finalization stalls', () => {
+    expect(RECORDER_FINALIZE_TIMEOUT_MS).toBe(15000);
+    expect(getRecorderFinalizeTimeoutMs()).toBe(15000);
+  });
+
   test('throttles preview updates more aggressively while recording', () => {
     expect(PREVIEW_FPS_IDLE).toBe(30);
     expect(PREVIEW_FPS_RECORDING).toBe(12);
@@ -77,5 +85,35 @@ describe('recorder-utils', () => {
     expect((recordingStream as unknown as InstanceType<typeof FakeMediaStream>).tracks).toEqual(
       videoTracks
     );
+  });
+
+  test('finalizeRecordingChunks saves video data and returns the saved path', async () => {
+    const result = await finalizeRecordingChunks({
+      chunks: [new Blob(['screen-data'])],
+      saveFolder: '/tmp',
+      suffix: 'screen',
+      saveVideo: async () => '/tmp/screen.webm'
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        suffix: 'screen',
+        path: '/tmp/screen.webm',
+        error: null
+      })
+    );
+    expect(result.blob.size).toBeGreaterThan(0);
+  });
+
+  test('finalizeRecordingChunks reports save failures without throwing', async () => {
+    const result = await finalizeRecordingChunks({
+      chunks: [new Blob(['camera-data'])],
+      saveFolder: '/tmp',
+      suffix: 'camera',
+      saveVideo: async () => ''
+    });
+
+    expect(result.path).toBeNull();
+    expect(result.error).toMatch(/camera recording could not be saved/i);
   });
 });

@@ -7,6 +7,21 @@ interface KeyframeProp extends Keyframe {
   backgroundFocusY?: number;
 }
 
+function collapseConsecutiveKeyframes<T extends Keyframe>(
+  keyframes: T[],
+  isSame: (prev: T, curr: T) => boolean,
+): T[] {
+  if (!Array.isArray(keyframes) || keyframes.length <= 1) return keyframes;
+
+  const collapsed = [keyframes[0]];
+  for (let index = 1; index < keyframes.length; index += 1) {
+    const prev = collapsed[collapsed.length - 1];
+    const curr = keyframes[index];
+    if (!isSame(prev, curr)) collapsed.push(curr);
+  }
+  return collapsed;
+}
+
 export function resolveOutputSize(sourceWidth: number, _sourceHeight: number) {
   const outW = sourceWidth % 2 === 0 ? sourceWidth : sourceWidth - 1;
   let outH = Math.round((outW * 9) / 16);
@@ -21,15 +36,28 @@ export function buildNumericExpr(
   defaultValue = 0,
   timeVar = 't',
 ): string {
-  const firstValue = Number.isFinite(Number(keyframes[0]?.[prop]))
-    ? Number(keyframes[0][prop])
+  const relevantKeyframes = collapseConsecutiveKeyframes(
+    keyframes,
+    (prev, curr) => {
+      const prevVal = Number.isFinite(Number(prev?.[prop]))
+        ? Number(prev[prop])
+        : defaultValue;
+      const currVal = Number.isFinite(Number(curr?.[prop]))
+        ? Number(curr[prop])
+        : defaultValue;
+      return Math.abs(prevVal - currVal) <= 0.0001;
+    },
+  );
+
+  const firstValue = Number.isFinite(Number(relevantKeyframes[0]?.[prop]))
+    ? Number(relevantKeyframes[0][prop])
     : defaultValue;
-  if (keyframes.length === 1) return firstValue.toFixed(precision);
+  if (relevantKeyframes.length === 1) return firstValue.toFixed(precision);
 
   let expr = firstValue.toFixed(precision);
-  for (let index = 1; index < keyframes.length; index += 1) {
-    const prev = keyframes[index - 1];
-    const curr = keyframes[index];
+  for (let index = 1; index < relevantKeyframes.length; index += 1) {
+    const prev = relevantKeyframes[index - 1];
+    const curr = relevantKeyframes[index];
     const prevVal = Number.isFinite(Number(prev?.[prop]))
       ? Number(prev[prop])
       : defaultValue;
@@ -62,12 +90,29 @@ export function panToFocusCoord(
 }
 
 export function buildPosExpr(keyframes: Keyframe[], prop: 'pipX' | 'pipY'): string {
-  if (keyframes.length === 1) return String(Math.round(keyframes[0][prop]));
+  const relevantKeyframes = collapseConsecutiveKeyframes(
+    keyframes,
+    (prev, curr) => {
+      const prevVisible =
+        prev.pipVisible !== undefined ? prev.pipVisible : true;
+      const currVisible =
+        curr.pipVisible !== undefined ? curr.pipVisible : true;
+      return (
+        Math.round(prev[prop]) === Math.round(curr[prop]) &&
+        (prev.cameraFullscreen || false) === (curr.cameraFullscreen || false) &&
+        prevVisible === currVisible
+      );
+    },
+  );
 
-  let expr = String(Math.round(keyframes[0][prop]));
-  for (let index = 1; index < keyframes.length; index += 1) {
-    const prev = keyframes[index - 1];
-    const curr = keyframes[index];
+  if (relevantKeyframes.length === 1) {
+    return String(Math.round(relevantKeyframes[0][prop]));
+  }
+
+  let expr = String(Math.round(relevantKeyframes[0][prop]));
+  for (let index = 1; index < relevantKeyframes.length; index += 1) {
+    const prev = relevantKeyframes[index - 1];
+    const curr = relevantKeyframes[index];
     const prevVal = Math.round(prev[prop]);
     const currVal = Math.round(curr[prop]);
     const time = curr.time;
@@ -93,12 +138,16 @@ export function buildPosExpr(keyframes: Keyframe[], prop: 'pipX' | 'pipY'): stri
 }
 
 export function buildAlphaExpr(keyframes: Keyframe[]): string {
-  if (keyframes.length === 1) return keyframes[0].pipVisible ? '1' : '0';
+  const relevantKeyframes = collapseConsecutiveKeyframes(
+    keyframes,
+    (prev, curr) => prev.pipVisible === curr.pipVisible,
+  );
+  if (relevantKeyframes.length === 1) return relevantKeyframes[0].pipVisible ? '1' : '0';
 
-  let expr = keyframes[0].pipVisible ? '1' : '0';
-  for (let index = 1; index < keyframes.length; index += 1) {
-    const prev = keyframes[index - 1];
-    const curr = keyframes[index];
+  let expr = relevantKeyframes[0].pipVisible ? '1' : '0';
+  for (let index = 1; index < relevantKeyframes.length; index += 1) {
+    const prev = relevantKeyframes[index - 1];
+    const curr = relevantKeyframes[index];
     const time = curr.time;
 
     if (prev.pipVisible !== curr.pipVisible) {
@@ -119,12 +168,16 @@ export function buildCamFullAlphaExpr(keyframes: Keyframe[]): string {
   const isFullVisible = (keyframe: Keyframe) =>
     (keyframe.cameraFullscreen || false) && keyframe.pipVisible;
 
-  if (keyframes.length === 1) return isFullVisible(keyframes[0]) ? '1' : '0';
+  const relevantKeyframes = collapseConsecutiveKeyframes(
+    keyframes,
+    (prev, curr) => isFullVisible(prev) === isFullVisible(curr),
+  );
+  if (relevantKeyframes.length === 1) return isFullVisible(relevantKeyframes[0]) ? '1' : '0';
 
-  let expr = isFullVisible(keyframes[0]) ? '1' : '0';
-  for (let index = 1; index < keyframes.length; index += 1) {
-    const prev = keyframes[index - 1];
-    const curr = keyframes[index];
+  let expr = isFullVisible(relevantKeyframes[0]) ? '1' : '0';
+  for (let index = 1; index < relevantKeyframes.length; index += 1) {
+    const prev = relevantKeyframes[index - 1];
+    const curr = relevantKeyframes[index];
     const time = curr.time;
     const start = time - TRANSITION_DURATION;
     const prevFull = isFullVisible(prev);

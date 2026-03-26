@@ -28,6 +28,8 @@ import {
   resolveCameraPlaybackTargetTime
 } from './features/timeline/camera-sync';
 import {
+  finalizeRecordingChunks,
+  getRecorderFinalizeTimeoutMs,
   getRecorderOptions,
   getRecorderTimesliceMs,
   shouldRenderPreviewFrame,
@@ -1637,6 +1639,7 @@ import {
 
     function createRecorder(stream, suffix) {
       const chunks = [];
+      let recorderError = null;
       const recorderOptions = getRecorderOptions({
         suffix,
         hasAudio: typeof stream?.getAudioTracks === 'function' && stream.getAudioTracks().length > 0
@@ -1654,14 +1657,39 @@ import {
         if (e.data.size > 0) chunks.push(e.data);
       };
 
+      recorder.onerror = (event) => {
+        recorderError = event?.error?.message || `${suffix} recorder failed`;
+        console.error(`[Recorder] ${suffix} error`, event?.error || event);
+      };
+
       // blobPromise resolves with { blob, path } when recording stops
       recorder.blobPromise = new Promise((resolve) => {
+        let settled = false;
+        const settle = (result) => {
+          if (settled) return;
+          settled = true;
+          resolve(result);
+        };
+
         recorder.onstop = async () => {
-          const blob = new Blob(chunks, { type: 'video/webm' });
-          const buffer = await blob.arrayBuffer();
-          const savedPath = await window.electronAPI.saveVideo(buffer, saveFolder, suffix);
-          if (savedPath) console.log('Saved:', savedPath);
-          resolve({ blob, path: savedPath });
+          const result = await finalizeRecordingChunks({
+            chunks,
+            saveFolder,
+            saveVideo: window.electronAPI.saveVideo,
+            suffix
+          });
+
+          const error = result.path ? null : (result.error || recorderError || `${suffix} recording failed`);
+          if (result.path) {
+            console.log('Saved:', result.path);
+          } else {
+            console.error(`[Recorder] ${suffix} finalize failed`, error);
+          }
+
+          settle({
+            ...result,
+            error
+          });
         };
       });
 
@@ -2316,14 +2344,38 @@ import {
         screenRecInterval = null;
       }
 
+      const recorderFinalizeTimeoutMs = getRecorderFinalizeTimeoutMs();
       recorders.forEach(r => {
-        if (r.state !== 'inactive') r.stop();
+        if (r.state === 'inactive') return;
+        if (typeof r.requestData === 'function') {
+          try {
+            r.requestData();
+          } catch (error) {
+            console.warn(`[Recorder] ${r.suffix} requestData failed`, error);
+          }
+        }
+        r.stop();
       });
 
-      // Await all blobs
+      // Await each recorder independently so one finalize failure cannot wedge the whole stop flow.
       const results = {};
+      const finalizeErrors = [];
       for (const r of recorders) {
-        results[r.suffix] = await r.blobPromise;
+        const result = await Promise.race([
+          r.blobPromise,
+          new Promise((resolve) => {
+            setTimeout(() => {
+              resolve({
+                blob: new Blob([], { type: 'video/webm' }),
+                error: `${r.suffix} recording did not finish saving in time`,
+                path: null,
+                suffix: r.suffix
+              });
+            }, recorderFinalizeTimeoutMs);
+          })
+        ]);
+        results[r.suffix] = result;
+        if (result?.error) finalizeErrors.push(result.error);
       }
 
       recorders = [];
@@ -2342,7 +2394,10 @@ import {
       setTranscriptStatus('', 'neutral');
 
       // Enter editor if we have at least a screen recording
-      if (results.screen) {
+      if (results.screen?.path) {
+        if (finalizeErrors.length > 0) {
+          console.warn('Recording finalized with partial failures:', finalizeErrors);
+        }
         const takeId = `take-${Date.now()}`;
         const takeCreatedAt = new Date().toISOString();
         const screenPath = results.screen.path;
@@ -2418,6 +2473,9 @@ import {
           console.error('Failed to append recording to project timeline:', error);
           setWorkspaceView('recording');
         }
+      } else if (finalizeErrors.length > 0) {
+        console.error('Recording finalize failed:', finalizeErrors);
+        showProjectHomeMessage(finalizeErrors.join(' '));
       }
       updateWorkspaceHeader();
     }

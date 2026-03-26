@@ -550,4 +550,50 @@ describe('main/services/render-service', () => {
       })
     );
   });
+
+  test('renderComposite keeps overlay filters bounded for long redundant camera timelines', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-long-keyframes-'));
+    const outputDir = path.join(tmpDir, 'out');
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    const cameraPath = path.join(tmpDir, 'camera.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+    fs.writeFileSync(cameraPath, 'camera', 'utf8');
+
+    const execCalls: { bin: string; args: string[] }[] = [];
+    const keyframes = Array.from({ length: 240 }, (_, index) => ({
+      time: index * 15,
+      pipX: 10,
+      pipY: 10,
+      pipVisible: true,
+      cameraFullscreen: false,
+      backgroundZoom: 1,
+      backgroundPanX: 0,
+      backgroundPanY: 0
+    })) as Keyframe[];
+
+    await renderComposite(
+      {
+        outputFolder: outputDir,
+        takes: [{ id: 'take-1', screenPath, cameraPath }],
+        sections: [{ takeId: 'take-1', sourceStart: 0, sourceEnd: 3600 }],
+        keyframes,
+        pipSize: 300,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        screenFitMode: 'fill'
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 555,
+        probeVideoFpsWithFfmpeg: async () => 30,
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
+          execCalls.push({ bin: ffmpegPath, args });
+        })
+      }
+    );
+
+    const argString = execCalls[0].args.join(' ');
+    expect(argString).toContain("overlay=x='10':y='10'");
+    expect(argString).not.toContain('if(gte(T,');
+  });
 });
