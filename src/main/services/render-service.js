@@ -128,6 +128,8 @@ function buildOutputArgs(targetFps, outputPath) {
     '12',
     '-preset',
     'slow',
+    '-g',
+    String(targetFps * 2),
     '-c:a',
     'aac',
     '-b:a',

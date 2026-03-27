@@ -16,7 +16,7 @@ A take SHALL be considered "referenced" if any section in `timeline.sections` OR
 - **THEN** the take is unreferenced and eligible for cleanup
 
 ### Requirement: Stage unreferenced take files to .deleted/
-When a take becomes unreferenced (last section deleted or unsaved), the system SHALL move its files (screenPath, cameraPath, **and mousePath if present**) to a `.deleted/` subfolder inside the project directory via IPC. The take SHALL be removed from `project.takes`. An overlay media file is unreferenced when no overlay segment's `mediaPath` points to it. The `stageTakeIfUnreferenced` pattern SHALL be extended to also support overlay media files via a parallel `stageOverlayFileIfUnreferenced(mediaPath)` function.
+When a take becomes unreferenced (last section deleted or unsaved), the system SHALL move its files (screenPath, cameraPath, mousePath if present, **and proxyPath if present**) to a `.deleted/` subfolder inside the project directory via IPC. The take SHALL be removed from `project.takes`. An overlay media file is unreferenced when no overlay segment's `mediaPath` points to it. The `stageTakeIfUnreferenced` pattern SHALL be extended to also support overlay media files via a parallel `stageOverlayFileIfUnreferenced(mediaPath)` function.
 
 #### Scenario: Delete last section referencing a take
 - **WHEN** user deletes the last section (unsaved) that references take A
@@ -38,6 +38,14 @@ When a take becomes unreferenced (last section deleted or unsaved), the system S
 - **WHEN** an unreferenced take has screenPath and cameraPath but no mousePath
 - **THEN** only screen and camera files are moved (no error for missing mousePath)
 
+#### Scenario: Take with proxy file
+- **WHEN** an unreferenced take has a non-null proxyPath pointing to an existing file
+- **THEN** the proxy file is also moved to `.deleted/` alongside the screen, camera, and mouse trail files
+
+#### Scenario: Take without proxy file (legacy or proxy not yet generated)
+- **WHEN** an unreferenced take has proxyPath null or the proxy file does not exist on disk
+- **THEN** the staging operation proceeds for the other files without error
+
 #### Scenario: Stage unreferenced overlay media file
 - **WHEN** the last overlay segment referencing `overlay-media/img.png` is deleted
 - **THEN** `overlay-media/img.png` is moved to `.deleted/overlay-media/img.png`
@@ -47,7 +55,7 @@ When a take becomes unreferenced (last section deleted or unsaved), the system S
 - **THEN** the media file is NOT staged for deletion
 
 ### Requirement: Unstage take files on undo
-When an undo operation restores a section that was the last reference to a take, the system SHALL move the take's files back from `.deleted/` to the project directory and re-add the take to `project.takes`. **This includes the mouse trail file if it was staged.** This SHALL apply to both take files and overlay media files.
+When an undo operation restores a section that was the last reference to a take, the system SHALL move the take's files back from `.deleted/` to the project directory and re-add the take to `project.takes`. **This includes the mouse trail file and proxy file if they were staged.** This SHALL apply to both take files and overlay media files.
 
 #### Scenario: Undo restores unreferenced take
 - **WHEN** user undoes a section delete that had triggered file staging
@@ -56,6 +64,11 @@ When an undo operation restores a section that was the last reference to a take,
 #### Scenario: Undo restores take with mouse trail
 - **WHEN** user undoes a section delete that had triggered file staging for a take with mousePath
 - **THEN** the screen, camera, and mouse trail files are all restored from `.deleted/`
+
+#### Scenario: Undo restores take with proxy file
+- **WHEN** user undoes a section delete that had triggered file staging for a take with proxyPath
+- **THEN** the proxy file is also restored from `.deleted/` to the project directory
+- **AND** take.proxyPath remains valid after undo
 
 #### Scenario: Unstage overlay media on undo
 - **WHEN** an overlay deletion is undone and the media was staged

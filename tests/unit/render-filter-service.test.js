@@ -81,7 +81,7 @@ describe('main/services/render-filter-service', () => {
       'it'
     );
     expect(expr).toContain('if(gte(it,2.000),2.000');
-    expect(expr).toContain('if(gte(it,1.700),1.000+1.000*(it-1.700)/0.300');
+    expect(expr).toContain('if(gte(it,1.700),1.000+1.000*if(lt((it-1.700)/0.300,0.5)');
   });
 
   test('panToFocusCoord converts section pan into focus position', () => {

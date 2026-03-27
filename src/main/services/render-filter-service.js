@@ -1,5 +1,17 @@
 const TRANSITION_DURATION = 0.3;
 
+/**
+ * Build an ffmpeg expression for easeInOut interpolation over a transition.
+ * Matches the editor's easeInOut: t < 0.5 ? 2*t*t : 1 - pow(-2*t+2, 2)/2
+ * @param {string} timeVar - ffmpeg time variable ('t' or 'T')
+ * @param {number} tStart  - transition start time in seconds
+ * @returns {string} ffmpeg expression that outputs 0→1 with easeInOut curve
+ */
+function easeExpr(timeVar, tStart) {
+  const p = `(${timeVar}-${tStart.toFixed(3)})/${TRANSITION_DURATION.toFixed(3)}`;
+  return `if(lt(${p},0.5),2*${p}*${p},1-pow(-2*${p}+2,2)/2)`;
+}
+
 function resolveOutputSize(sourceWidth, sourceHeight, outputMode = 'landscape') {
   if (outputMode === 'reel') {
     let outH = sourceHeight % 2 === 0 ? sourceHeight : sourceHeight - 1;
@@ -30,7 +42,8 @@ function buildNumericExpr(keyframes, prop, precision = 3, defaultValue = 0, time
     const diff = currVal - prevVal;
 
     if (Math.abs(diff) > 0.0001) {
-      expr = `if(gte(${timeVar},${t.toFixed(3)}),${currVal.toFixed(precision)},if(gte(${timeVar},${tStart.toFixed(3)}),${prevVal.toFixed(precision)}+${diff.toFixed(precision)}*(${timeVar}-${tStart.toFixed(3)})/${TRANSITION_DURATION.toFixed(3)},${expr}))`;
+      const eased = easeExpr(timeVar, tStart);
+      expr = `if(gte(${timeVar},${t.toFixed(3)}),${currVal.toFixed(precision)},if(gte(${timeVar},${tStart.toFixed(3)}),${prevVal.toFixed(precision)}+${diff.toFixed(precision)}*${eased},${expr}))`;
     } else {
       expr = `if(gte(${timeVar},${t.toFixed(3)}),${currVal.toFixed(precision)},${expr})`;
     }
@@ -68,7 +81,8 @@ function buildPosExpr(keyframes, prop) {
     } else if (prevVal !== currVal && !prevFull && !currFull) {
       const tStart = t - TRANSITION_DURATION;
       const diff = currVal - prevVal;
-      expr = `if(gte(t,${t.toFixed(3)}),${currVal},if(gte(t,${tStart.toFixed(3)}),${prevVal}+${diff}*(t-${tStart.toFixed(3)})/${TRANSITION_DURATION.toFixed(3)},${expr}))`;
+      const eased = easeExpr('t', tStart);
+      expr = `if(gte(t,${t.toFixed(3)}),${currVal},if(gte(t,${tStart.toFixed(3)}),${prevVal}+${diff}*${eased},${expr}))`;
     } else {
       expr = `if(gte(t,${t.toFixed(3)}),${currVal},${expr})`;
     }
@@ -87,10 +101,11 @@ function buildAlphaExpr(keyframes) {
 
     if (prev.pipVisible !== curr.pipVisible) {
       const tStart = t - TRANSITION_DURATION;
+      const eased = easeExpr('T', tStart);
       if (curr.pipVisible) {
-        expr = `if(gte(T,${t.toFixed(3)}),1,if(gte(T,${tStart.toFixed(3)}),(T-${tStart.toFixed(3)})/${TRANSITION_DURATION.toFixed(3)},${expr}))`;
+        expr = `if(gte(T,${t.toFixed(3)}),1,if(gte(T,${tStart.toFixed(3)}),${eased},${expr}))`;
       } else {
-        expr = `if(gte(T,${t.toFixed(3)}),0,if(gte(T,${tStart.toFixed(3)}),(${t.toFixed(3)}-T)/${TRANSITION_DURATION.toFixed(3)},${expr}))`;
+        expr = `if(gte(T,${t.toFixed(3)}),0,if(gte(T,${tStart.toFixed(3)}),1-${eased},${expr}))`;
       }
     } else {
       expr = `if(gte(T,${t.toFixed(3)}),${curr.pipVisible ? '1' : '0'},${expr})`;
@@ -113,10 +128,11 @@ function buildCamFullAlphaExpr(keyframes) {
     const currFull = isFullVisible(curr);
 
     if (prevFull !== currFull) {
+      const eased = easeExpr('T', tStart);
       if (currFull) {
-        expr = `if(gte(T,${t.toFixed(3)}),1,if(gte(T,${tStart.toFixed(3)}),(T-${tStart.toFixed(3)})/${TRANSITION_DURATION.toFixed(3)},${expr}))`;
+        expr = `if(gte(T,${t.toFixed(3)}),1,if(gte(T,${tStart.toFixed(3)}),${eased},${expr}))`;
       } else {
-        expr = `if(gte(T,${t.toFixed(3)}),0,if(gte(T,${tStart.toFixed(3)}),(${t.toFixed(3)}-T)/${TRANSITION_DURATION.toFixed(3)},${expr}))`;
+        expr = `if(gte(T,${t.toFixed(3)}),0,if(gte(T,${tStart.toFixed(3)}),1-${eased},${expr}))`;
       }
     } else {
       expr = `if(gte(T,${t.toFixed(3)}),${currFull ? '1' : '0'},${expr})`;

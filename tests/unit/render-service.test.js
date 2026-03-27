@@ -355,7 +355,7 @@ describe('main/services/render-service', () => {
 
     const argString = execCalls[0].args.join(' ');
     expect(argString).toContain('if(gte(it,1.000),2.000');
-    expect(argString).toContain('if(gte(it,0.700),1.000+1.000*(it-0.700)/0.300');
+    expect(argString).toContain('if(gte(it,0.700),1.000+1.000*if(lt((it-0.700)/0.300,0.5)');
   });
 
   test('renderComposite reuses ffmpeg inputs for repeated sections from the same take', async () => {
