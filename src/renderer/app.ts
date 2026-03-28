@@ -35,6 +35,7 @@ import type {
   Section,
   Keyframe,
   Overlay,
+  AudioOverlay,
   OverlayPosition,
   OutputMode,
   PipSnapPoint,
@@ -71,6 +72,9 @@ interface EditorState {
   overlays: Overlay[];
   savedOverlays: Overlay[];
   selectedOverlayId: string | null;
+  audioOverlays: AudioOverlay[];
+  savedAudioOverlays: AudioOverlay[];
+  selectedAudioOverlayId: string | null;
 }
 
 interface TakeVideos {
@@ -85,6 +89,9 @@ interface TimelineSnapshot {
   overlays: Overlay[];
   savedOverlays: Overlay[];
   selectedOverlayId: string | null;
+  audioOverlays: AudioOverlay[];
+  savedAudioOverlays: AudioOverlay[];
+  selectedAudioOverlayId: string | null;
   selectedSectionId: string | null;
   duration: number;
   outputMode: OutputMode;
@@ -171,6 +178,8 @@ interface EnterEditorOpts {
   pipScale?: number | null;
   overlays?: Overlay[];
   savedOverlays?: Overlay[];
+  audioOverlays?: AudioOverlay[];
+  savedAudioOverlays?: AudioOverlay[];
   initialView?: string;
   screenFitMode?: string;
 }
@@ -401,6 +410,12 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       overlayIdCounter += 1;
       return `overlay-${Date.now()}-${overlayIdCounter}`;
     }
+    let audioOverlayIdCounter = 0;
+    function generateAudioOverlayId(): string {
+      audioOverlayIdCounter += 1;
+      return `audio-overlay-${Date.now()}-${audioOverlayIdCounter}`;
+    }
+    const AUDIO_OVERLAY_EXTENSIONS = ['.mp3', '.wav', '.aac', '.ogg', '.flac', '.m4a'];
 
     const MIN_SECTION_ZOOM = 1;
     const MIN_REEL_SECTION_ZOOM = 0.5;
@@ -1023,7 +1038,9 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
           sourceWidth: null,
           sourceHeight: null,
           overlays: [],
-          savedOverlays: []
+          savedOverlays: [],
+          audioOverlays: [],
+          savedAudioOverlays: []
         };
       }
 
@@ -1046,7 +1063,9 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         sourceWidth: editorState.sourceWidth || null,
         sourceHeight: editorState.sourceHeight || null,
         overlays: Array.isArray(editorState.overlays) ? editorState.overlays.map(o => ({ ...o, landscape: { ...o.landscape }, reel: { ...o.reel } })) : [],
-        savedOverlays: Array.isArray(editorState.savedOverlays) ? editorState.savedOverlays.map(o => ({ ...o, landscape: { ...o.landscape }, reel: { ...o.reel } })) : []
+        savedOverlays: Array.isArray(editorState.savedOverlays) ? editorState.savedOverlays.map(o => ({ ...o, landscape: { ...o.landscape }, reel: { ...o.reel } })) : [],
+        audioOverlays: Array.isArray(editorState.audioOverlays) ? editorState.audioOverlays.map(ao => ({ ...ao })) : [],
+        savedAudioOverlays: Array.isArray(editorState.savedAudioOverlays) ? editorState.savedAudioOverlays.map(ao => ({ ...ao })) : []
       };
     }
 
@@ -1163,6 +1182,7 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       undoStack.length = 0;
       redoStack.length = 0;
       waveformPeaks = null;
+      clearAudioBufferCache();
       renderWaveform();
       renderSectionMarkers();
       updateSectionZoomControls();
@@ -1264,6 +1284,9 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         overlays: editorState!.overlays.map(o => ({ ...o, landscape: { ...o.landscape }, reel: { ...o.reel } })),
         savedOverlays: editorState!.savedOverlays.map(o => ({ ...o, landscape: { ...o.landscape }, reel: { ...o.reel } })),
         selectedOverlayId: editorState!.selectedOverlayId,
+        audioOverlays: editorState!.audioOverlays.map(ao => ({ ...ao })),
+        savedAudioOverlays: editorState!.savedAudioOverlays.map(ao => ({ ...ao })),
+        selectedAudioOverlayId: editorState!.selectedAudioOverlayId,
         selectedSectionId: editorState!.selectedSectionId,
         duration: editorState!.duration,
         outputMode: editorState!.outputMode
@@ -1278,6 +1301,8 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       // Capture current overlay media references before restore
       const beforeOverlayPaths = new Set<string>();
       for (const o of editorState!.overlays) if (o.mediaPath) beforeOverlayPaths.add(o.mediaPath);
+      const beforeAudioOverlayPaths = new Set<string>();
+      for (const ao of editorState!.audioOverlays) if (ao.mediaPath) beforeAudioOverlayPaths.add(ao.mediaPath);
 
       editorState!.sections = snapshot.sections;
       editorState!.savedSections = snapshot.savedSections || [];
@@ -1285,6 +1310,9 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       editorState!.overlays = snapshot.overlays || [];
       editorState!.savedOverlays = snapshot.savedOverlays || [];
       editorState!.selectedOverlayId = snapshot.selectedOverlayId || null;
+      editorState!.audioOverlays = snapshot.audioOverlays || [];
+      editorState!.savedAudioOverlays = snapshot.savedAudioOverlays || [];
+      editorState!.selectedAudioOverlayId = snapshot.selectedAudioOverlayId || null;
       editorState!.selectedSectionId = snapshot.selectedSectionId;
       editorState!.duration = snapshot.duration;
       if (snapshot.outputMode) {
@@ -1324,6 +1352,22 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         for (const mediaPath of afterOverlayPaths) {
           if (!beforeOverlayPaths.has(mediaPath)) {
             await window.electronAPI.unstageOverlayFile(activeProjectPath, mediaPath).catch(() => {});
+          }
+        }
+      }
+
+      // Audio overlay file staging on undo/redo
+      const afterAudioOverlayPaths = new Set<string>();
+      for (const ao of editorState!.audioOverlays) if (ao.mediaPath) afterAudioOverlayPaths.add(ao.mediaPath);
+      if (activeProjectPath) {
+        for (const mediaPath of beforeAudioOverlayPaths) {
+          if (!afterAudioOverlayPaths.has(mediaPath)) {
+            await window.electronAPI.stageAudioOverlayFile(activeProjectPath, mediaPath).catch(() => {});
+          }
+        }
+        for (const mediaPath of afterAudioOverlayPaths) {
+          if (!beforeAudioOverlayPaths.has(mediaPath)) {
+            await window.electronAPI.unstageAudioOverlayFile(activeProjectPath, mediaPath).catch(() => {});
           }
         }
       }
@@ -1469,6 +1513,8 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
             pipScale: project.settings?.pipScale,
             overlays: project.timeline.overlays || [],
             savedOverlays: project.timeline.savedOverlays || [],
+            audioOverlays: project.timeline.audioOverlays || [],
+            savedAudioOverlays: project.timeline.savedAudioOverlays || [],
             initialView: preferredView === 'recording' ? 'recording' : 'timeline'
           }
         );
@@ -1681,7 +1727,9 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       if (!editorState || !Array.isArray(editorState.overlays)) return;
       if (!editorState.overlays.some(o => o.id === overlayId)) return;
       editorState.selectedOverlayId = overlayId;
+      editorState.selectedAudioOverlayId = null;
       renderOverlayMarkers();
+      renderAudioOverlayMarkers();
       renderSectionMarkers();
     }
 
@@ -1811,18 +1859,14 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         const metaActions = document.createElement('span');
         metaActions.className = 'flex items-center gap-1 ml-2';
 
-        const heartBtn = document.createElement('button');
-        heartBtn.type = 'button';
-        heartBtn.className = 'hover:text-red-400 transition-colors leading-none flex items-center';
-        heartBtn.innerHTML = section.saved
-          ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>'
-          : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
-        heartBtn.title = section.saved ? 'Unsave section' : 'Save section';
-        heartBtn.addEventListener('click', (e: MouseEvent) => {
-          e.stopPropagation();
-          toggleSectionSaved(section.id);
-        });
-        metaActions.appendChild(heartBtn);
+        metaActions.appendChild(buildVolumeHeartStack({
+          id: section.id,
+          volume: section.volume,
+          saved: section.saved,
+          isRemoved,
+          onVolumeChange: (newVol) => { section.volume = newVol; scheduleProjectSave(); },
+          onHeartClick: () => toggleSectionSaved(section.id)
+        }));
 
         if (isRemoved) {
           const readdBtn = document.createElement('button');
@@ -1872,12 +1916,116 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
     if (sidebarTabSegments) sidebarTabSegments.addEventListener('click', () => switchSidebarTab('segments'));
     if (sidebarTabOverlays) sidebarTabOverlays.addEventListener('click', () => switchSidebarTab('overlays'));
 
+    const VOL_SVG_MUTE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
+    const VOL_SVG_LOW = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>';
+    const VOL_SVG_HIGH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>';
+
+    function getVolumeSvg(vol: number): string {
+      if (vol <= 0) return VOL_SVG_MUTE;
+      if (vol <= 0.5) return VOL_SVG_LOW;
+      return VOL_SVG_HIGH;
+    }
+
+    const preMuteVolumes = new Map<string, number>();
+
+    interface VolumeHeartOpts {
+      id: string;
+      volume: number;
+      saved: boolean;
+      isRemoved: boolean;
+      onVolumeChange: (newVol: number) => void;
+      onHeartClick: () => void;
+    }
+
+    function buildVolumeHeartStack(opts: VolumeHeartOpts): HTMLElement {
+      const container = document.createElement('span');
+      container.className = 'flex flex-col items-center gap-1';
+
+      // Heart button
+      const heartBtn = document.createElement('button');
+      heartBtn.type = 'button';
+      heartBtn.className = 'hover:text-red-400 transition-colors leading-none flex items-center';
+      heartBtn.innerHTML = opts.saved
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+      heartBtn.title = opts.saved ? 'Unsave' : 'Save';
+      heartBtn.addEventListener('click', (e: MouseEvent) => {
+        e.stopPropagation();
+        opts.onHeartClick();
+      });
+      container.appendChild(heartBtn);
+
+      // Volume row (only for active items)
+      if (!opts.isRemoved) {
+        const volWrap = document.createElement('span');
+        volWrap.className = 'flex items-center gap-1 select-none';
+
+        const volIcon = document.createElement('button');
+        volIcon.type = 'button';
+        volIcon.className = 'text-neutral-400 hover:text-neutral-200 transition-colors leading-none flex items-center';
+        volIcon.innerHTML = getVolumeSvg(opts.volume);
+        volIcon.title = opts.volume > 0 ? 'Mute' : 'Unmute';
+
+        const volValue = document.createElement('span');
+        volValue.className = 'text-xs font-mono tabular-nums text-neutral-300 min-w-[32px] text-right cursor-ew-resize';
+        volValue.textContent = opts.volume.toFixed(2);
+
+        const volInput = document.createElement('input');
+        volInput.type = 'range';
+        volInput.min = '0';
+        volInput.max = '1';
+        volInput.step = '0.01';
+        volInput.value = String(opts.volume);
+        volInput.className = 'hidden';
+
+        // Click to toggle mute
+        volIcon.addEventListener('click', (e: MouseEvent) => {
+          e.stopPropagation();
+          let newVol: number;
+          if (opts.volume > 0) {
+            preMuteVolumes.set(opts.id, opts.volume);
+            newVol = 0;
+          } else {
+            newVol = preMuteVolumes.get(opts.id) || 1.0;
+            preMuteVolumes.delete(opts.id);
+          }
+          volInput.value = String(newVol);
+          volInput.dispatchEvent(new Event('input'));
+          volInput.dispatchEvent(new Event('change'));
+        });
+
+        volWrap.appendChild(volIcon);
+        volWrap.appendChild(volValue);
+        volWrap.appendChild(volInput);
+        container.appendChild(volWrap);
+
+        // Drag to scrub on value label
+        initScrubDrag(volValue, null, volInput);
+
+        let dragActive = false;
+        volInput.addEventListener('input', () => {
+          const newVol = Math.max(0, Math.min(1, parseFloat(volInput.value)));
+          if (!dragActive) { pushUndo(); dragActive = true; }
+          opts.volume = newVol;
+          volValue.textContent = newVol.toFixed(2);
+          volIcon.innerHTML = getVolumeSvg(newVol);
+          volIcon.title = newVol > 0 ? 'Mute' : 'Unmute';
+          opts.onVolumeChange(newVol);
+        });
+        volInput.addEventListener('change', () => { dragActive = false; });
+      }
+
+      return container;
+    }
+
     function renderOverlayList(): void {
       if (!editorOverlayList) return;
       const activeOverlays = editorState?.overlays || [];
       const savedOverlays = editorState?.savedOverlays || [];
+      const activeAudioOverlays = editorState?.audioOverlays || [];
+      const savedAudioOverlays = editorState?.savedAudioOverlays || [];
 
-      if (activeOverlays.length === 0 && savedOverlays.length === 0) {
+      if (activeOverlays.length === 0 && savedOverlays.length === 0 && activeAudioOverlays.length === 0 && savedAudioOverlays.length === 0) {
         editorOverlayList.innerHTML = '<div class="text-xs text-neutral-500 px-1">Drop media onto the canvas to add overlays.</div>';
         return;
       }
@@ -1911,8 +2059,8 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         heartBtn.type = 'button';
         heartBtn.className = 'hover:text-red-400 transition-colors leading-none flex items-center';
         heartBtn.innerHTML = overlay.saved
-          ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>'
-          : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+          ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>'
+          : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
         heartBtn.title = overlay.saved ? 'Unsave overlay' : 'Save overlay';
         heartBtn.addEventListener('click', (e: MouseEvent) => {
           e.stopPropagation();
@@ -1952,6 +2100,127 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
 
         editorOverlayList.appendChild(row);
       }
+
+      // Audio overlay section
+      if (activeAudioOverlays.length > 0 || savedAudioOverlays.length > 0) {
+        const header = document.createElement('div');
+        header.className = 'text-[10px] font-semibold text-neutral-500 uppercase tracking-wider px-1 pt-2 pb-1';
+        header.textContent = 'Audio';
+        editorOverlayList.appendChild(header);
+
+        const audioActiveItems = activeAudioOverlays.map(ao => ({ ao, isRemoved: false }));
+        const audioSavedItems = savedAudioOverlays.map(ao => ({ ao, isRemoved: true }));
+        const allAudioItems = [...audioActiveItems, ...audioSavedItems].sort((a, b) => a.ao.startTime - b.ao.startTime);
+
+        for (const { ao, isRemoved } of allAudioItems) {
+          const selected = !isRemoved && ao.id === editorState!.selectedAudioOverlayId;
+          const fileName = ao.mediaPath.split('/').pop() || '';
+
+          const row = document.createElement('div');
+          row.dataset.audioOverlayId = ao.id;
+          row.className = `w-full text-left rounded-lg px-3 py-2 transition-all ${selected ? 'bg-teal-900/40' : isRemoved ? '' : 'hover:bg-neutral-900 cursor-pointer'}`;
+
+          const meta = document.createElement('div');
+          meta.className = 'text-xs text-neutral-500 font-mono tabular-nums flex items-center justify-between';
+
+          const metaLabel = document.createElement('span');
+          if (isRemoved) metaLabel.style.opacity = '0.5';
+          metaLabel.textContent = `\u266B ${formatTime(ao.startTime)} - ${formatTime(ao.endTime)}`;
+          meta.appendChild(metaLabel);
+
+          const metaActions = document.createElement('span');
+          metaActions.className = 'flex items-center gap-1 ml-2';
+
+          metaActions.appendChild(buildVolumeHeartStack({
+            id: ao.id,
+            volume: ao.volume,
+            saved: ao.saved,
+            isRemoved,
+            onVolumeChange: (newVol) => { ao.volume = newVol; scheduleProjectSave(); },
+            onHeartClick: () => toggleAudioOverlaySaved(ao.id)
+          }));
+
+          if (isRemoved) {
+            const readdBtn = document.createElement('button');
+            readdBtn.type = 'button';
+            readdBtn.className = 'hover:text-green-400 transition-colors leading-none flex items-center';
+            readdBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+            readdBtn.title = 'Re-add to timeline';
+            readdBtn.addEventListener('click', (e: MouseEvent) => {
+              e.stopPropagation();
+              readdSavedAudioOverlay(ao.id);
+            });
+            metaActions.appendChild(readdBtn);
+          }
+
+          meta.appendChild(metaActions);
+
+          const text = document.createElement('div');
+          text.className = `mt-1 text-sm leading-snug truncate ${isRemoved ? 'text-neutral-600' : 'text-neutral-300'}`;
+          if (isRemoved) text.style.opacity = '0.5';
+          text.textContent = fileName;
+
+          row.appendChild(meta);
+          row.appendChild(text);
+
+          if (!isRemoved) {
+            row.addEventListener('click', () => {
+              selectAudioOverlay(ao.id);
+              editorSeek(ao.startTime);
+            });
+          }
+
+          editorOverlayList.appendChild(row);
+        }
+      }
+    }
+
+    async function toggleAudioOverlaySaved(audioOverlayId: string): Promise<void> {
+      if (!editorState) return;
+
+      const activeAo = editorState.audioOverlays.find(o => o.id === audioOverlayId);
+      if (activeAo) {
+        pushUndo();
+        activeAo.saved = !activeAo.saved;
+        renderOverlayList();
+        scheduleProjectSave();
+        return;
+      }
+
+      const savedAo = editorState.savedAudioOverlays.find(o => o.id === audioOverlayId);
+      if (savedAo) {
+        pushUndo();
+        const idx = editorState.savedAudioOverlays.indexOf(savedAo);
+        editorState.savedAudioOverlays.splice(idx, 1);
+        // Check if media file is still referenced
+        const stillReferenced = editorState.audioOverlays.some(o => o.mediaPath === savedAo.mediaPath)
+          || editorState.savedAudioOverlays.some(o => o.mediaPath === savedAo.mediaPath);
+        if (!stillReferenced && activeProjectPath) {
+          await window.electronAPI.stageAudioOverlayFile(activeProjectPath, savedAo.mediaPath).catch(() => {});
+        }
+        renderOverlayList();
+        scheduleProjectSave();
+      }
+    }
+
+    function readdSavedAudioOverlay(audioOverlayId: string): void {
+      if (!editorState) return;
+      const idx = editorState.savedAudioOverlays.findIndex(o => o.id === audioOverlayId);
+      if (idx < 0) return;
+      pushUndo();
+      const ao = editorState.savedAudioOverlays.splice(idx, 1)[0]!;
+      // Try to place at original position
+      const placedStart = placeAudioOverlayAtTime(ao.startTime, ao.endTime - ao.startTime, editorState.duration, ao.trackIndex || 0);
+      if (placedStart !== null) {
+        ao.startTime = placedStart;
+        ao.endTime = placedStart + (ao.endTime - ao.startTime);
+      }
+      editorState.audioOverlays.push(ao);
+      editorState.audioOverlays.sort((a, b) => a.startTime - b.startTime);
+      editorState.selectedAudioOverlayId = ao.id;
+      renderAudioOverlayMarkers();
+      renderOverlayList();
+      scheduleProjectSave();
     }
 
     async function toggleOverlaySaved(overlayId: string): Promise<void> {
@@ -2168,6 +2437,7 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       }
       renderSectionTranscriptList();
       renderOverlayMarkers();
+      renderAudioOverlayMarkers();
     }
 
     function updateProxyProgressBars(takeId: string, percent: number): void {
@@ -2408,6 +2678,279 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       }
 
       return Math.max(0, Math.min(maxTime - duration, targetStart));
+    }
+
+    // === Audio overlay timeline, trim, split, delete ===
+
+    const editorAudioTrack0 = document.getElementById('editorAudioTrack0');
+    let audioOverlayTrimDragState: OverlayTrimDragState | null = null;
+
+    function selectAudioOverlay(audioOverlayId: string): void {
+      if (!editorState) return;
+      editorState.selectedAudioOverlayId = audioOverlayId;
+      editorState.selectedOverlayId = null;
+      editorState.selectedSectionId = null;
+      renderAudioOverlayMarkers();
+      renderOverlayMarkers();
+      renderSectionMarkers();
+      if (activeSidebarTab === 'overlays') renderOverlayList();
+    }
+
+    function renderAudioOverlayMarkers(): void {
+      if (!editorAudioTrack0) return;
+      editorAudioTrack0.innerHTML = '';
+      if (!editorState || !editorState.duration || !Array.isArray(editorState.audioOverlays) || editorState.audioOverlays.length === 0) {
+        if (activeSidebarTab === 'overlays') renderOverlayList();
+        return;
+      }
+
+      for (const ao of editorState.audioOverlays) {
+        const pctLeft = (ao.startTime / editorState.duration) * 100;
+        const pctWidth = Math.max(0.35, ((ao.endTime - ao.startTime) / editorState.duration) * 100);
+        const selected = ao.id === editorState.selectedAudioOverlayId;
+
+        const band = document.createElement('div');
+        band.className = 'absolute top-0 bottom-0';
+        band.dataset.audioOverlayId = ao.id;
+        band.style.left = pctLeft + '%';
+        band.style.width = pctWidth + '%';
+        band.style.backgroundColor = selected ? 'rgba(20,184,166,0.45)' : 'rgba(20,184,166,0.22)';
+        band.style.borderRadius = '3px';
+        band.style.cursor = 'pointer';
+        if (selected) {
+          band.style.boxShadow = 'inset 0 0 0 2px rgba(94,234,212,0.6)';
+        }
+
+        const fileName = ao.mediaPath.split('/').pop() || '';
+        band.title = `\u266B ${fileName}: ${formatTime(ao.startTime)} - ${formatTime(ao.endTime)}`;
+
+        // Waveform canvas
+        const peaks = audioOverlayPeakCache.get(ao.mediaPath);
+        if (peaks) {
+          const waveCanvas = document.createElement('canvas');
+          waveCanvas.className = 'absolute inset-0 pointer-events-none';
+          waveCanvas.style.cssText = 'width:100%;height:100%;opacity:0.5;';
+          band.appendChild(waveCanvas);
+          // Defer drawing to next frame so dimensions are available
+          requestAnimationFrame(() => {
+            const rect = band.getBoundingClientRect();
+            waveCanvas.width = Math.max(1, Math.round(rect.width));
+            waveCanvas.height = Math.max(1, Math.round(rect.height));
+            drawWaveformOnCanvas(waveCanvas, peaks, ao.sourceStart, ao.sourceEnd, audioBufferCache.get(ao.mediaPath)?.duration || (ao.sourceEnd));
+          });
+        } else {
+          // Trigger async decode for waveform (will render on next markers refresh)
+          decodeAndCacheAudioBuffer(ao.mediaPath).then(() => { /* waveform available on next render */ });
+        }
+
+        const label = document.createElement('div');
+        label.className = 'absolute text-[9px] font-medium pointer-events-none truncate';
+        label.style.cssText = 'left:4px;right:4px;top:50%;transform:translateY(-50%);z-index:1;';
+        label.style.color = selected ? 'rgba(167,243,208,0.95)' : 'rgba(94,234,212,0.75)';
+        label.textContent = `\u266B ${fileName}`;
+        band.appendChild(label);
+
+        if (selected) {
+          const leftHandle = document.createElement('div');
+          leftHandle.dataset.audioOverlayTrimEdge = 'left';
+          leftHandle.dataset.audioOverlayId = ao.id;
+          leftHandle.style.cssText = 'position:absolute;top:0;bottom:0;left:0;width:6px;cursor:col-resize;z-index:30;border-left:3px solid rgba(94,234,212,0.7);';
+          band.appendChild(leftHandle);
+          const rightHandle = document.createElement('div');
+          rightHandle.dataset.audioOverlayTrimEdge = 'right';
+          rightHandle.dataset.audioOverlayId = ao.id;
+          rightHandle.style.cssText = 'position:absolute;top:0;bottom:0;right:0;width:6px;cursor:col-resize;z-index:30;border-right:3px solid rgba(94,234,212,0.7);';
+          band.appendChild(rightHandle);
+        }
+
+        editorAudioTrack0.appendChild(band);
+      }
+      if (activeSidebarTab === 'overlays') renderOverlayList();
+    }
+
+    function startAudioOverlayTrimDrag(e: MouseEvent, audioOverlayId: string, edge: string): void {
+      const ao = editorState!.audioOverlays.find(o => o.id === audioOverlayId);
+      if (!ao) return;
+      pushUndo();
+      audioOverlayTrimDragState = {
+        overlayId: audioOverlayId,
+        edge,
+        startX: e.clientX,
+        originalStartTime: ao.startTime,
+        originalEndTime: ao.endTime,
+        originalSourceStart: ao.sourceStart,
+        originalSourceEnd: ao.sourceEnd
+      };
+      const onMove = (e2: MouseEvent) => updateAudioOverlayTrimDrag(e2);
+      const onUp = () => {
+        audioOverlayTrimDragState = null;
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        renderAudioOverlayMarkers();
+        scheduleProjectSave();
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+
+    function updateAudioOverlayTrimDrag(e: MouseEvent): void {
+      if (!audioOverlayTrimDragState || !editorState) return;
+      const ao = editorState.audioOverlays.find(o => o.id === audioOverlayTrimDragState!.overlayId);
+      if (!ao) return;
+      const rect = editorTimeline.getBoundingClientRect();
+      const pxPerSec = rect.width / editorState.duration;
+      const deltaSec = (e.clientX - audioOverlayTrimDragState.startX) / pxPerSec;
+      const sameTrack = editorState.audioOverlays.filter(o => (o.trackIndex || 0) === (ao.trackIndex || 0));
+      const idxInTrack = sameTrack.indexOf(ao);
+      const prevEnd = idxInTrack > 0 ? sameTrack[idxInTrack - 1]!.endTime : 0;
+      const nextStart = idxInTrack < sameTrack.length - 1 ? sameTrack[idxInTrack + 1]!.startTime : editorState.duration;
+
+      if (audioOverlayTrimDragState.edge === 'left') {
+        const newStart = Math.max(prevEnd, Math.min(ao.endTime - 0.1, audioOverlayTrimDragState.originalStartTime + deltaSec));
+        const shift = newStart - audioOverlayTrimDragState.originalStartTime;
+        ao.startTime = newStart;
+        ao.sourceStart = Math.max(0, audioOverlayTrimDragState.originalSourceStart + shift);
+      } else {
+        const newEnd = Math.min(nextStart, Math.max(ao.startTime + 0.1, audioOverlayTrimDragState.originalEndTime + deltaSec));
+        const shift = newEnd - audioOverlayTrimDragState.originalEndTime;
+        ao.endTime = newEnd;
+        ao.sourceEnd = Math.max(ao.sourceStart + 0.1, audioOverlayTrimDragState.originalSourceEnd + shift);
+      }
+      renderAudioOverlayMarkers();
+    }
+
+    function splitAudioOverlayAtPlayhead(): void {
+      if (!editorState || !editorState.selectedAudioOverlayId) return;
+      const ao = editorState.audioOverlays.find(o => o.id === editorState!.selectedAudioOverlayId);
+      if (!ao) return;
+      const time = editorState.currentTime;
+      if (time <= ao.startTime + 0.1 || time >= ao.endTime - 0.1) return;
+      pushUndo();
+
+      const splitSourceTime = ao.sourceStart + (time - ao.startTime);
+      const newAo: AudioOverlay = {
+        id: generateAudioOverlayId(),
+        trackIndex: ao.trackIndex || 0,
+        mediaPath: ao.mediaPath,
+        startTime: time,
+        endTime: ao.endTime,
+        sourceStart: splitSourceTime,
+        sourceEnd: ao.sourceEnd,
+        volume: ao.volume,
+        saved: false
+      };
+      ao.endTime = time;
+      ao.sourceEnd = splitSourceTime;
+      const idx = editorState.audioOverlays.indexOf(ao);
+      editorState.audioOverlays.splice(idx + 1, 0, newAo);
+      editorState.selectedAudioOverlayId = newAo.id;
+      renderAudioOverlayMarkers();
+      scheduleProjectSave();
+    }
+
+    function deleteSelectedAudioOverlay(): void {
+      if (!editorState || !editorState.selectedAudioOverlayId) return;
+      const idx = editorState.audioOverlays.findIndex(o => o.id === editorState!.selectedAudioOverlayId);
+      if (idx < 0) return;
+      pushUndo();
+      const removed = editorState.audioOverlays.splice(idx, 1)[0]!;
+      if (removed.saved) {
+        editorState.savedAudioOverlays.push(removed);
+      } else {
+        const stillReferenced = editorState.audioOverlays.some(o => o.mediaPath === removed.mediaPath)
+          || editorState.savedAudioOverlays.some(o => o.mediaPath === removed.mediaPath);
+        if (!stillReferenced && activeProjectPath) {
+          window.electronAPI.stageAudioOverlayFile(activeProjectPath, removed.mediaPath).catch(() => {});
+        }
+      }
+      editorState.selectedAudioOverlayId = null;
+      renderAudioOverlayMarkers();
+      renderOverlayList();
+      scheduleProjectSave();
+    }
+
+    function placeAudioOverlayAtTime(targetStart: number, duration: number, maxTime: number, trackIndex = 0, excludeId: string | null = null): number | null {
+      const others = editorState!.audioOverlays.filter(o => o.id !== excludeId && (o.trackIndex || 0) === trackIndex);
+      const targetEnd = targetStart + duration;
+      const collisions = others.filter(o => o.startTime < targetEnd && o.endTime > targetStart);
+      if (collisions.length === 0) {
+        return Math.max(0, Math.min(maxTime - duration, targetStart));
+      }
+      // Find first gap after targetStart
+      const sorted = others.sort((a, b) => a.startTime - b.startTime);
+      let candidate = targetStart;
+      for (const o of sorted) {
+        if (candidate + duration <= o.startTime) break;
+        candidate = o.endTime;
+      }
+      if (candidate + duration > maxTime) return null;
+      return candidate;
+    }
+
+    // Audio track click & trim handlers
+    if (editorAudioTrack0) {
+      editorAudioTrack0.addEventListener('mousedown', (e: MouseEvent) => {
+        if (!editorState) return;
+        const target = e.target as HTMLElement;
+        // Trim handle
+        const trimEdge = target.dataset.audioOverlayTrimEdge;
+        const trimId = target.dataset.audioOverlayId;
+        if (trimEdge && trimId) {
+          e.stopPropagation();
+          startAudioOverlayTrimDrag(e, trimId, trimEdge);
+          return;
+        }
+        // Segment click
+        const bandEl = target.closest('[data-audio-overlay-id]') as HTMLElement | null;
+        if (bandEl) {
+          const aoId = bandEl.dataset.audioOverlayId;
+          if (aoId) selectAudioOverlay(aoId);
+          return;
+        }
+      });
+
+      // Drop zone for audio files
+      editorAudioTrack0.addEventListener('dragover', (e: DragEvent) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      });
+      editorAudioTrack0.addEventListener('drop', async (e: DragEvent) => {
+        e.preventDefault();
+        if (!editorState || !activeProjectPath || !e.dataTransfer?.files?.length) return;
+        const file = e.dataTransfer.files[0]!;
+        const filePath = window.electronAPI.getFilePathFromDrop(file);
+        if (!filePath) return;
+        const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
+        if (!AUDIO_OVERLAY_EXTENSIONS.includes(ext as typeof AUDIO_OVERLAY_EXTENSIONS[number])) return;
+
+        const result = await window.electronAPI.importAudioOverlayMedia(activeProjectPath, filePath);
+        if (!result || !result.mediaPath) return;
+
+        pushUndo();
+        const startTime = editorState.currentTime;
+        // Use file duration from import or fallback to remaining timeline
+        const audioDuration = result.duration > 0 ? result.duration : Math.max(5, editorState.duration - startTime);
+        const endTime = Math.min(startTime + audioDuration, editorState.duration);
+        const placedStart = placeAudioOverlayAtTime(startTime, endTime - startTime, editorState.duration, 0);
+        if (placedStart === null) return;
+
+        const newAo: AudioOverlay = {
+          id: generateAudioOverlayId(),
+          trackIndex: 0,
+          mediaPath: result.mediaPath,
+          startTime: placedStart,
+          endTime: placedStart + (endTime - startTime),
+          sourceStart: 0,
+          sourceEnd: endTime - startTime,
+          volume: 1.0,
+          saved: false
+        };
+        editorState.audioOverlays.push(newAo);
+        editorState.audioOverlays.sort((a, b) => a.startTime - b.startTime);
+        editorState.selectedAudioOverlayId = newAo.id;
+        renderAudioOverlayMarkers();
+        scheduleProjectSave();
+      });
     }
 
     function startTrimDrag(e: MouseEvent, sectionId: string, edge: string): void {
@@ -3371,7 +3914,8 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         sourceEnd: section.sourceEnd,
         takeId: section.takeId,
         transcript: '',
-        saved: !!section.saved
+        saved: !!section.saved,
+        volume: section.volume ?? 1.0
       };
 
       section.sourceEnd = sourceTime;
@@ -3487,6 +4031,12 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
           screenFitMode: editorState?.screenFitMode,
           sourceWidth: editorState?.sourceWidth,
           sourceHeight: editorState?.sourceHeight,
+          outputMode: editorState?.outputMode,
+          pipScale: editorState?.pipScale,
+          overlays: editorState?.overlays,
+          savedOverlays: editorState?.savedOverlays,
+          audioOverlays: editorState?.audioOverlays,
+          savedAudioOverlays: editorState?.savedAudioOverlays,
           initialView: 'timeline'
         }
       );
@@ -3754,7 +4304,10 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         pipScale,
         overlays: Array.isArray(opts.overlays) ? opts.overlays : [],
         savedOverlays: Array.isArray(opts.savedOverlays) ? opts.savedOverlays : [],
-        selectedOverlayId: null
+        selectedOverlayId: null,
+        audioOverlays: Array.isArray(opts.audioOverlays) ? opts.audioOverlays : [],
+        savedAudioOverlays: Array.isArray(opts.savedAudioOverlays) ? opts.savedAudioOverlays : [],
+        selectedAudioOverlayId: null
       };
       screenFitSelect.value = editorState.screenFitMode === 'fit' ? 'fit' : 'fill';
       cameraSyncOffsetInput.value = String(editorState.cameraSyncOffsetMs);
@@ -4112,6 +4665,138 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       }
     }
 
+    // === Audio overlay playback preview ===
+    const audioBufferCache = new Map<string, AudioBuffer>();
+    const audioOverlayPeakCache = new Map<string, { min: Float32Array; max: Float32Array }>();
+    let audioOverlayContext: AudioContext | null = null;
+    let activeAudioOverlayNodes: Array<{ source: AudioBufferSourceNode; gain: GainNode; aoId: string }> = [];
+
+    function getAudioOverlayContext(): AudioContext {
+      if (!audioOverlayContext || audioOverlayContext.state === 'closed') {
+        audioOverlayContext = new AudioContext();
+      }
+      return audioOverlayContext;
+    }
+
+    async function decodeAndCacheAudioBuffer(mediaPath: string): Promise<AudioBuffer | null> {
+      if (audioBufferCache.has(mediaPath)) return audioBufferCache.get(mediaPath)!;
+      if (!activeProjectPath) return null;
+      const fileUrl = window.electronAPI.pathToFileUrl(activeProjectPath + '/' + mediaPath);
+      try {
+        const response = await fetch(fileUrl);
+        const arrayBuffer = await response.arrayBuffer();
+        const ctx = getAudioOverlayContext();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+        audioBufferCache.set(mediaPath, audioBuffer);
+        // Extract peak data for waveform
+        extractPeakData(mediaPath, audioBuffer);
+        return audioBuffer;
+      } catch (err) {
+        console.error('Failed to decode audio overlay:', mediaPath, err);
+        return null;
+      }
+    }
+
+    function extractPeakData(mediaPath: string, audioBuffer: AudioBuffer): void {
+      if (audioOverlayPeakCache.has(mediaPath)) return;
+      const channel = audioBuffer.getChannelData(0);
+      const numPeaks = Math.min(1000, channel.length);
+      const samplesPerPeak = Math.max(1, Math.floor(channel.length / numPeaks));
+      const minPeaks = new Float32Array(numPeaks);
+      const maxPeaks = new Float32Array(numPeaks);
+      for (let i = 0; i < numPeaks; i++) {
+        let min = 1;
+        let max = -1;
+        const start = i * samplesPerPeak;
+        const end = Math.min(start + samplesPerPeak, channel.length);
+        for (let j = start; j < end; j++) {
+          const val = channel[j]!;
+          if (val < min) min = val;
+          if (val > max) max = val;
+        }
+        minPeaks[i] = min;
+        maxPeaks[i] = max;
+      }
+      audioOverlayPeakCache.set(mediaPath, { min: minPeaks, max: maxPeaks });
+    }
+
+    function drawWaveformOnCanvas(
+      canvas: HTMLCanvasElement,
+      peaks: { min: Float32Array; max: Float32Array },
+      sourceStart: number,
+      sourceEnd: number,
+      totalDuration: number
+    ): void {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const w = canvas.width;
+      const h = canvas.height;
+      const midY = h / 2;
+
+      // Map source range to peak indices
+      const totalPeaks = peaks.min.length;
+      const startIdx = Math.floor((sourceStart / totalDuration) * totalPeaks);
+      const endIdx = Math.ceil((sourceEnd / totalDuration) * totalPeaks);
+      const rangeLen = Math.max(1, endIdx - startIdx);
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = 'rgba(20, 184, 166, 0.6)';
+      for (let x = 0; x < w; x++) {
+        const peakIdx = startIdx + Math.floor((x / w) * rangeLen);
+        const clampedIdx = Math.max(0, Math.min(totalPeaks - 1, peakIdx));
+        const minVal = peaks.min[clampedIdx]!;
+        const maxVal = peaks.max[clampedIdx]!;
+        const top = midY - maxVal * midY;
+        const bottom = midY - minVal * midY;
+        ctx.fillRect(x, top, 1, Math.max(1, bottom - top));
+      }
+    }
+
+    function startAudioOverlayPlayback(): void {
+      stopAudioOverlayPlayback();
+      if (!editorState || !editorState.audioOverlays.length) return;
+      const ctx = getAudioOverlayContext();
+      if (ctx.state === 'suspended') ctx.resume();
+      const time = editorState.currentTime;
+
+      for (const ao of editorState.audioOverlays) {
+        if (time >= ao.endTime || time < ao.startTime) continue;
+        const buffer = audioBufferCache.get(ao.mediaPath);
+        if (!buffer) continue;
+
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        const gain = ctx.createGain();
+        gain.gain.value = ao.volume;
+        source.connect(gain);
+        gain.connect(ctx.destination);
+
+        const offset = ao.sourceStart + (time - ao.startTime);
+        const remaining = ao.sourceEnd - offset;
+        if (remaining <= 0) continue;
+        source.start(0, offset, remaining);
+        activeAudioOverlayNodes.push({ source, gain, aoId: ao.id });
+      }
+    }
+
+    function stopAudioOverlayPlayback(): void {
+      for (const node of activeAudioOverlayNodes) {
+        try { node.source.stop(); } catch (_) { /* already stopped */ }
+        try { node.source.disconnect(); node.gain.disconnect(); } catch (_) { /* ok */ }
+      }
+      activeAudioOverlayNodes = [];
+    }
+
+    function clearAudioBufferCache(): void {
+      audioBufferCache.clear();
+      audioOverlayPeakCache.clear();
+      stopAudioOverlayPlayback();
+      if (audioOverlayContext && audioOverlayContext.state !== 'closed') {
+        audioOverlayContext.close().catch(() => {});
+        audioOverlayContext = null;
+      }
+    }
+
     function editorPlay(): void {
       if (!editorState || editorState.rendering) return;
       editorState.playing = true;
@@ -4127,6 +4812,7 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
           }
         }
       }
+      startAudioOverlayPlayback();
       editorPlayBtn.textContent = 'Pause';
     }
 
@@ -4142,6 +4828,7 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         }
       }
       for (const vel of overlayVideoEls) { if (vel && !vel.paused) vel.pause(); }
+      stopAudioOverlayPlayback();
       editorPlayBtn.textContent = 'Play';
       if (editorVideoFrameCallbackId !== null && editorVideoFrameHost) {
         editorVideoFrameHost.cancelVideoFrameCallback(editorVideoFrameCallbackId);
@@ -4200,6 +4887,17 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         );
       }
       syncOverlayVideo(time);
+      // Restart audio overlay playback at new position if playing
+      if (editorState.playing) {
+        startAudioOverlayPlayback();
+      }
+      // Apply section volume to screen video
+      if (resolved && activeTakeId) {
+        const videos = getOrCreateTakeVideos(activeTakeId);
+        if (videos) {
+          videos.screen.volume = resolved.section.volume ?? 1.0;
+        }
+      }
       updateEditorTimeDisplay();
       updateScrubberPosition();
     }
@@ -4846,6 +5544,39 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       if (!filePath) return;
 
       const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+      const isAudio = AUDIO_OVERLAY_EXTENSIONS.includes(ext as typeof AUDIO_OVERLAY_EXTENSIONS[number]);
+      if (isAudio) {
+        try {
+          const result = await window.electronAPI.importAudioOverlayMedia(activeProjectPath, filePath);
+          if (!result || !result.mediaPath) return;
+          pushUndo();
+          const startTime = editorState.currentTime;
+          const audioDuration = result.duration > 0 ? result.duration : Math.max(5, editorState.duration - startTime);
+          const endTime = Math.min(startTime + audioDuration, editorState.duration);
+          const placedStart = placeAudioOverlayAtTime(startTime, endTime - startTime, editorState.duration, 0);
+          if (placedStart === null) { undoStack.pop(); updateUndoRedoButtons(); return; }
+          const newAo: AudioOverlay = {
+            id: generateAudioOverlayId(),
+            trackIndex: 0,
+            mediaPath: result.mediaPath,
+            startTime: placedStart,
+            endTime: placedStart + (endTime - startTime),
+            sourceStart: 0,
+            sourceEnd: endTime - startTime,
+            volume: 1.0,
+            saved: false
+          };
+          editorState.audioOverlays.push(newAo);
+          editorState.audioOverlays.sort((a, b) => a.startTime - b.startTime);
+          editorState.selectedAudioOverlayId = newAo.id;
+          renderAudioOverlayMarkers();
+          scheduleProjectSave();
+        } catch (err) {
+          console.error('Failed to import audio overlay media:', err);
+        }
+        return;
+      }
+
       const isImage = OVERLAY_IMAGE_EXTS.includes(ext);
       const isVideo = OVERLAY_VIDEO_EXTS.includes(ext);
       if (!isImage && !isVideo) return;
@@ -5041,6 +5772,81 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         return;
       }
 
+      // Audio overlay trim edge
+      const audioOverlayTrimEdge = target?.dataset?.audioOverlayTrimEdge;
+      if (audioOverlayTrimEdge) {
+        const aoTrimId = target.dataset.audioOverlayId;
+        if (aoTrimId) {
+          startAudioOverlayTrimDrag(e, aoTrimId, audioOverlayTrimEdge);
+          return;
+        }
+      }
+
+      // Audio overlay band drag-to-move
+      const audioOverlayId = target?.dataset?.audioOverlayId || target?.parentElement?.dataset?.audioOverlayId;
+      if (audioOverlayId) {
+        selectAudioOverlay(audioOverlayId);
+        const ao = editorState.audioOverlays.find(o => o.id === audioOverlayId);
+        if (ao) {
+          let aoMoveDragStarted = false;
+          const aoMoveDuration = ao.endTime - ao.startTime;
+          const aoMoveOrigStart = ao.startTime;
+          let aoDragGhostEl: HTMLDivElement | null = null;
+          let aoLastDragTargetTime = ao.startTime;
+          pushUndo();
+
+          const onMoveAo = (e2: MouseEvent) => {
+            aoMoveDragStarted = true;
+            const rect = editorTimeline.getBoundingClientRect();
+            const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
+            aoLastDragTargetTime = Math.max(0, Math.min(editorState!.duration - aoMoveDuration, pct * editorState!.duration - aoMoveDuration / 2));
+
+            if (!aoDragGhostEl && editorAudioTrack0) {
+              aoDragGhostEl = document.createElement('div');
+              aoDragGhostEl.style.cssText = 'position:absolute;top:0;bottom:0;z-index:40;border-radius:3px;pointer-events:none;';
+              aoDragGhostEl.style.backgroundColor = 'rgba(20,184,166,0.6)';
+              aoDragGhostEl.style.boxShadow = '0 0 8px rgba(94,234,212,0.5)';
+              editorAudioTrack0.appendChild(aoDragGhostEl);
+              const origBand = editorAudioTrack0.querySelector(`[data-audio-overlay-id="${audioOverlayId}"]`) as HTMLElement | null;
+              if (origBand) origBand.style.opacity = '0.25';
+            }
+
+            if (aoDragGhostEl) {
+              const ghostLeft = (aoLastDragTargetTime / editorState!.duration) * 100;
+              const ghostWidth = (aoMoveDuration / editorState!.duration) * 100;
+              aoDragGhostEl.style.left = ghostLeft + '%';
+              aoDragGhostEl.style.width = ghostWidth + '%';
+            }
+          };
+          const onUpAo = () => {
+            window.removeEventListener('mousemove', onMoveAo);
+            window.removeEventListener('mouseup', onUpAo);
+            if (aoDragGhostEl) {
+              aoDragGhostEl.remove();
+              aoDragGhostEl = null;
+            }
+            if (aoMoveDragStarted) {
+              ao.startTime = aoMoveOrigStart;
+              ao.endTime = aoMoveOrigStart + aoMoveDuration;
+              const placed = placeAudioOverlayAtTime(aoLastDragTargetTime, aoMoveDuration, editorState!.duration, ao.trackIndex || 0, audioOverlayId);
+              if (placed !== null) {
+                ao.startTime = placed;
+                ao.endTime = placed + aoMoveDuration;
+              }
+              editorState!.audioOverlays.sort((a, b) => a.startTime - b.startTime);
+              renderAudioOverlayMarkers();
+              scheduleProjectSave();
+            } else {
+              undoStack.pop();
+              updateUndoRedoButtons();
+            }
+          };
+          window.addEventListener('mousemove', onMoveAo);
+          window.addEventListener('mouseup', onUpAo);
+        }
+        return;
+      }
+
       const trimEdge = target?.dataset?.trimEdge;
       if (trimEdge) {
         const trimSectionId = target.dataset.sectionId;
@@ -5056,6 +5862,10 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         if (editorState.selectedOverlayId) {
           editorState.selectedOverlayId = null;
           renderOverlayMarkers();
+        }
+        if (editorState.selectedAudioOverlayId) {
+          editorState.selectedAudioOverlayId = null;
+          renderAudioOverlayMarkers();
         }
       }
       seekFromTimeline(e);
@@ -5125,7 +5935,9 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
     editorRedoBtn.addEventListener('click', editorRedo);
     editorPlayBtn.addEventListener('click', editorTogglePlay);
     editorSplitBtn.addEventListener('click', () => {
-      if (editorState?.selectedOverlayId) {
+      if (editorState?.selectedAudioOverlayId) {
+        splitAudioOverlayAtPlayhead();
+      } else if (editorState?.selectedOverlayId) {
         splitOverlayAtPlayhead();
       } else {
         splitSectionAtPlayhead();
@@ -5378,6 +6190,7 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
           sourceHeight: editorState!.sourceHeight || CANVAS_H,
           outputMode: editorState!.outputMode || 'landscape',
           overlays: editorState!.overlays || [],
+          audioOverlays: editorState!.audioOverlays || [],
           outputFolder: saveFolder
         });
 
@@ -5509,14 +6322,18 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         if (prevB !== null) editorSeek(prevB);
       } else if (e.code === 'Backspace' || e.code === 'Delete') {
         e.preventDefault();
-        if (editorState?.selectedOverlayId) {
+        if (editorState?.selectedAudioOverlayId) {
+          deleteSelectedAudioOverlay();
+        } else if (editorState?.selectedOverlayId) {
           deleteSelectedOverlay();
         } else {
           deleteSelectedSection();
         }
       } else if (e.code === 'KeyS') {
         e.preventDefault();
-        if (editorState?.selectedOverlayId) {
+        if (editorState?.selectedAudioOverlayId) {
+          splitAudioOverlayAtPlayhead();
+        } else if (editorState?.selectedOverlayId) {
           splitOverlayAtPlayhead();
         } else {
           splitSectionAtPlayhead();

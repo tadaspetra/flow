@@ -521,6 +521,74 @@ export function createProjectService({ app }: { app: AppLike }) {
     return `overlay-media/${destName}`;
   }
 
+  function importAudioOverlayMedia(
+    projectPath: string,
+    sourcePath: string
+  ): { mediaPath: string; duration: number } {
+    const resolvedProject = path.resolve(projectPath);
+    const audioDir = path.join(resolvedProject, 'audio-overlay-media');
+    ensureDirectory(audioDir);
+
+    // Check if an identical file already exists
+    const sourceSize = fs.statSync(sourcePath).size;
+    const sourceContent = fs.readFileSync(sourcePath);
+    const existing = fs.readdirSync(audioDir);
+    for (const fileName of existing) {
+      const candidate = path.join(audioDir, fileName);
+      try {
+        if (fs.statSync(candidate).size !== sourceSize) continue;
+        if (Buffer.compare(sourceContent, fs.readFileSync(candidate)) === 0) {
+          return { mediaPath: `audio-overlay-media/${fileName}`, duration: 0 };
+        }
+      } catch (_) {
+        /* skip unreadable files */
+      }
+    }
+
+    const ext = path.extname(sourcePath).toLowerCase();
+    const baseName = path.basename(sourcePath, ext);
+    const destName = `${baseName}-${Date.now()}${ext}`;
+    const destPath = path.join(audioDir, destName);
+    fs.copyFileSync(sourcePath, destPath);
+    return { mediaPath: `audio-overlay-media/${destName}`, duration: 0 };
+  }
+
+  function stageAudioOverlayFile(
+    projectPath: string,
+    mediaPath: string
+  ): void {
+    const resolvedProject = path.resolve(projectPath);
+    const srcPath = path.join(resolvedProject, mediaPath);
+    if (!fs.existsSync(srcPath)) return;
+    const deletedDir = path.join(
+      resolvedProject,
+      '.deleted',
+      'audio-overlay-media'
+    );
+    ensureDirectory(deletedDir);
+    const dest = path.join(deletedDir, path.basename(srcPath));
+    fs.renameSync(srcPath, dest);
+  }
+
+  function unstageAudioOverlayFile(
+    projectPath: string,
+    mediaPath: string
+  ): void {
+    const resolvedProject = path.resolve(projectPath);
+    const fileName = path.basename(mediaPath);
+    const src = path.join(
+      resolvedProject,
+      '.deleted',
+      'audio-overlay-media',
+      fileName
+    );
+    if (!fs.existsSync(src)) return;
+    const audioDir = path.join(resolvedProject, 'audio-overlay-media');
+    ensureDirectory(audioDir);
+    const dest = path.join(audioDir, fileName);
+    fs.renameSync(src, dest);
+  }
+
   function stageOverlayFile(
     projectPath: string,
     mediaPath: string
@@ -613,8 +681,11 @@ export function createProjectService({ app }: { app: AppLike }) {
     cleanupDeletedFolder,
     cleanupUnusedTakes,
     importOverlayMedia,
+    importAudioOverlayMedia,
     stageOverlayFile,
     unstageOverlayFile,
+    stageAudioOverlayFile,
+    unstageAudioOverlayFile,
     saveMouseTrail
   };
 }

@@ -117,7 +117,8 @@ export function buildRemappedSectionsFromSegments(segments: SpeechSegment[]): Re
       end,
       duration: roundMs(duration),
       transcript: normalizeTranscriptText(segment.transcripts.join(' ')),
-      takeId: null
+      takeId: null,
+      volume: 1.0
     });
     timelineCursor += duration;
   }
@@ -165,7 +166,8 @@ export function normalizeSections(rawSections: unknown, duration: unknown): Sect
         duration: 0,
         takeId: typeof section.takeId === 'string' && section.takeId ? section.takeId : null,
         transcript,
-        saved: !!section.saved
+        saved: !!section.saved,
+        volume: 1.0
       };
     })
     .filter(section => section.end - section.start > 0.0001)
@@ -208,7 +210,8 @@ export function buildDefaultSectionsForDuration(duration: unknown): Section[] {
     duration: roundMs(safeDuration),
     transcript: '',
     takeId: null,
-    saved: false
+    saved: false,
+    volume: 1.0
   }];
 }
 

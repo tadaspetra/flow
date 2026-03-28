@@ -1,4 +1,4 @@
-import type { Keyframe, OutputMode, Overlay, ScreenFitMode } from '../../shared/types/domain.js';
+import type { Keyframe, OutputMode, Overlay, AudioOverlay, ScreenFitMode } from '../../shared/types/domain.js';
 import type { OverlayFilterResult } from '../../shared/types/services.js';
 
 export const TRANSITION_DURATION = 0.3;
@@ -573,4 +573,69 @@ export function buildOverlayFilter(
   // Rename last label to a consistent output
   const finalLabel = `ovl_${overlays.length - 1}`;
   return { inputs, filterParts, outputLabel: finalLabel };
+}
+
+/**
+ * Build audio overlay filter fragments for all audio overlay segments.
+ * Returns { inputs, filterParts } where:
+ *   - inputs: ffmpeg input args for each audio overlay (just ['-i'])
+ *   - filterParts: filter_complex fragments for audio trim/delay/volume/fade/pad
+ *   - labels: output labels for each audio overlay stream
+ */
+export function buildAudioOverlayFilter(
+  audioOverlays: AudioOverlay[],
+  inputOffset: number,
+  timelineDuration: number
+): { inputs: string[][]; filterParts: string[]; labels: string[] } {
+  if (!Array.isArray(audioOverlays) || audioOverlays.length === 0) {
+    return { inputs: [], filterParts: [], labels: [] };
+  }
+
+  const FADE = TRANSITION_DURATION;
+  const inputs: string[][] = [];
+  const filterParts: string[] = [];
+  const labels: string[] = [];
+
+  for (let i = 0; i < audioOverlays.length; i++) {
+    const ao = audioOverlays[i]!;
+    const idx = inputOffset + i;
+    const label = `audio_ovl_${i}`;
+
+    inputs.push(['-i']);
+
+    const parts: string[] = [];
+    parts.push(`[${idx}:a]atrim=start=${ao.sourceStart.toFixed(3)}:end=${ao.sourceEnd.toFixed(3)}`);
+    parts.push('asetpts=PTS-STARTPTS');
+
+    // Delay to timeline position (milliseconds, both channels)
+    const delayMs = Math.round(ao.startTime * 1000);
+    if (delayMs > 0) {
+      parts.push(`adelay=${delayMs}|${delayMs}`);
+    }
+
+    // Volume
+    if (Math.abs(ao.volume - 1.0) > 0.0001) {
+      parts.push(`volume=${ao.volume.toFixed(3)}`);
+    }
+
+    // Fade in (unless at timeline start)
+    const atVideoStart = ao.startTime < 0.01;
+    const atVideoEnd = timelineDuration > 0 && ao.endTime >= timelineDuration - 0.01;
+    if (!atVideoStart) {
+      parts.push(`afade=t=in:st=${ao.startTime.toFixed(3)}:d=${FADE.toFixed(3)}`);
+    }
+    if (!atVideoEnd) {
+      parts.push(`afade=t=out:st=${(ao.endTime - FADE).toFixed(3)}:d=${FADE.toFixed(3)}`);
+    }
+
+    // Pad with silence to full timeline duration (required for amix)
+    if (timelineDuration > 0) {
+      parts.push(`apad=whole_dur=${timelineDuration.toFixed(3)}`);
+    }
+
+    filterParts.push(`${parts.join(',')}[${label}]`);
+    labels.push(label);
+  }
+
+  return { inputs, filterParts, labels };
 }

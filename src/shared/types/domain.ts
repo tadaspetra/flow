@@ -21,6 +21,9 @@ export const MIN_PIP_SCALE = 0.15 as const;
 export const MAX_PIP_SCALE = 0.50 as const;
 export const DEFAULT_PIP_SCALE = 0.22 as const;
 export const MAX_OVERLAY_TRACKS = 2 as const;
+export const MAX_AUDIO_TRACKS = 1 as const;
+export const DEFAULT_AUDIO_VOLUME = 1.0 as const;
+export const AUDIO_OVERLAY_EXTENSIONS = ['.mp3', '.wav', '.aac', '.ogg', '.flac', '.m4a'] as const;
 
 export const EXPORT_AUDIO_PRESET_OFF = 'off' as const;
 export const EXPORT_AUDIO_PRESET_COMPRESSED = 'compressed' as const;
@@ -48,6 +51,7 @@ export interface Section {
   takeId: string | null;
   transcript: string;
   saved: boolean;
+  volume: number;
 }
 
 export interface SavedKeyframeState {
@@ -108,6 +112,18 @@ export interface Overlay {
   saved: boolean;
 }
 
+export interface AudioOverlay {
+  id: string;
+  trackIndex: number;
+  mediaPath: string;
+  startTime: number;
+  endTime: number;
+  sourceStart: number;
+  sourceEnd: number;
+  volume: number;
+  saved: boolean;
+}
+
 export interface Take {
   id: string;
   createdAt: string;
@@ -139,6 +155,8 @@ export interface ProjectTimeline {
   sourceHeight: number | null;
   overlays: Overlay[];
   savedOverlays: Overlay[];
+  audioOverlays: AudioOverlay[];
+  savedAudioOverlays: AudioOverlay[];
 }
 
 export interface Project {

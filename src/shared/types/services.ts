@@ -2,6 +2,7 @@ import type {
   Section,
   Keyframe,
   Overlay,
+  AudioOverlay,
   OutputMode,
   ExportAudioPreset,
   ScreenFitMode,
@@ -19,6 +20,7 @@ export interface RenderSectionInput {
   backgroundPanY: number;
   reelCropX: number;
   pipScale: number;
+  volume: number;
 }
 
 export interface RenderOptions {
@@ -26,6 +28,7 @@ export interface RenderOptions {
   sections?: unknown[];
   keyframes?: Keyframe[];
   overlays?: Overlay[];
+  audioOverlays?: AudioOverlay[];
   pipSize?: number;
   screenFitMode?: ScreenFitMode;
   exportAudioPreset?: ExportAudioPreset;

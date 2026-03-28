@@ -705,4 +705,134 @@ describe('main/services/render-service', () => {
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  test('normalizeSectionInput includes volume with default 1.0', () => {
+    const sections = normalizeSectionInput([
+      { takeId: 'a', sourceStart: 0, sourceEnd: 1 },
+      { takeId: 'b', sourceStart: 1, sourceEnd: 2, volume: 0.5 },
+      { takeId: 'c', sourceStart: 2, sourceEnd: 3, volume: 1.5 }
+    ]);
+
+    expect(sections).toHaveLength(3);
+    expect(sections[0]!.volume).toBe(1.0);
+    expect(sections[1]!.volume).toBe(0.5);
+    expect(sections[2]!.volume).toBe(1.0);
+  });
+
+  test('renderComposite applies per-section volume filter when volume != 1.0', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-sec-vol-'));
+    const outputDir = path.join(tmpDir, 'out');
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+
+    const execCalls: Array<{ bin: string; args: string[] }> = [];
+    await renderComposite(
+      {
+        outputFolder: outputDir,
+        takes: [{ id: 'take-1', screenPath, cameraPath: null }],
+        sections: [
+          { takeId: 'take-1', sourceStart: 0, sourceEnd: 5, volume: 0.5 },
+          { takeId: 'take-1', sourceStart: 5, sourceEnd: 10 }
+        ],
+        keyframes: [{ time: 0, pipX: 0, pipY: 0, pipVisible: false, cameraFullscreen: false }],
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        exportAudioPreset: 'off'
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 999,
+        probeVideoFpsWithFfmpeg: async () => 30,
+        runFfmpeg: async ({ args }: { ffmpegPath: string; args: string[] }) => {
+          execCalls.push({ bin: '', args });
+        }
+      }
+    );
+
+    const argString = execCalls[0]!.args.join(' ');
+    // First section should have volume=0.500, second should NOT have volume filter
+    expect(argString).toContain('asetpts=PTS-STARTPTS,volume=0.500[sa0]');
+    expect(argString).toContain('asetpts=PTS-STARTPTS[sa1]');
+    expect(argString).not.toContain('volume=1');
+  });
+
+  test('renderComposite includes audio overlay in amix when audioOverlays provided', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-audio-ovl-'));
+    const outputDir = path.join(tmpDir, 'out');
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    const audioPath = path.join(tmpDir, 'music.mp3');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+    fs.writeFileSync(audioPath, 'audio', 'utf8');
+
+    const execCalls: Array<{ bin: string; args: string[] }> = [];
+    await renderComposite(
+      {
+        outputFolder: outputDir,
+        takes: [{ id: 'take-1', screenPath, cameraPath: null }],
+        sections: [{ takeId: 'take-1', sourceStart: 0, sourceEnd: 10 }],
+        keyframes: [{ time: 0, pipX: 0, pipY: 0, pipVisible: false, cameraFullscreen: false }],
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        audioOverlays: [
+          { id: 'ao1', trackIndex: 0, mediaPath: path.relative(outputDir, audioPath), startTime: 2, endTime: 8, sourceStart: 0, sourceEnd: 6, volume: 0.7, saved: false }
+        ],
+        exportAudioPreset: 'compressed'
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 888,
+        probeVideoFpsWithFfmpeg: async () => 30,
+        runFfmpeg: async ({ args }: { ffmpegPath: string; args: string[] }) => {
+          execCalls.push({ bin: '', args });
+        }
+      }
+    );
+
+    const argString = execCalls[0]!.args.join(' ');
+    // Should use screen_audio instead of audio_out for concat label
+    expect(argString).toContain('[screen_audio]');
+    // Should have amix combining screen_audio and audio_ovl_0
+    expect(argString).toContain('[screen_audio][audio_ovl_0]amix=inputs=2:duration=first:normalize=0[mixed_audio]');
+    // Should compress after mix
+    expect(argString).toContain('[mixed_audio]acompressor=');
+    expect(argString).toContain('-map [audio_final]');
+    // Audio overlay input should be added
+    expect(argString).toContain(audioPath);
+  });
+
+  test('renderComposite backward compatible: no audio overlays produces identical audio pipeline', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-no-ao-'));
+    const outputDir = path.join(tmpDir, 'out');
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+
+    const execCalls: Array<{ bin: string; args: string[] }> = [];
+    await renderComposite(
+      {
+        outputFolder: outputDir,
+        takes: [{ id: 'take-1', screenPath, cameraPath: null }],
+        sections: [{ takeId: 'take-1', sourceStart: 0, sourceEnd: 5 }],
+        keyframes: [{ time: 0, pipX: 0, pipY: 0, pipVisible: false, cameraFullscreen: false }],
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        exportAudioPreset: 'compressed'
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 777,
+        probeVideoFpsWithFfmpeg: async () => 30,
+        runFfmpeg: async ({ args }: { ffmpegPath: string; args: string[] }) => {
+          execCalls.push({ bin: '', args });
+        }
+      }
+    );
+
+    const argString = execCalls[0]!.args.join(' ');
+    // Without audio overlays, pipeline should use audio_out and audio_final as before
+    expect(argString).toContain('[screen_raw][audio_out]');
+    expect(argString).toContain('[audio_out]acompressor=');
+    expect(argString).toContain('-map [audio_final]');
+    expect(argString).not.toContain('amix');
+    expect(argString).not.toContain('screen_audio');
+  });
 });

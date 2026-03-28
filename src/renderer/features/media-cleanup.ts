@@ -26,6 +26,7 @@ export interface MediaRefs {
   meterRAF?: number | null;
   cancelEditorDrawLoop?: (() => void) | null;
   stopAudioMeter?: (() => void) | null;
+  clearAudioBufferCache?: (() => void) | null;
 }
 
 /**
@@ -115,6 +116,16 @@ function cleanupAllMedia(refs: MediaRefs | null): void {
       /* already closed */
     }
     refs.audioContext = null;
+  }
+
+  // --- Audio overlay buffer cache -------------------------------------------
+  if (typeof refs.clearAudioBufferCache === 'function') {
+    try {
+      refs.clearAudioBufferCache();
+    } catch (_e) {
+      /* best-effort */
+    }
+    refs.clearAudioBufferCache = null;
   }
 
   // --- Animation frames -----------------------------------------------------

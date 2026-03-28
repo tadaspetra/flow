@@ -7,7 +7,8 @@ import {
   buildScreenFilter,
   resolveOutputSize,
   panToFocusCoord,
-  buildOverlayFilter
+  buildOverlayFilter,
+  buildAudioOverlayFilter
 } from '../../src/main/services/render-filter-service.js';
 
 describe('main/services/render-filter-service', () => {
@@ -691,5 +692,76 @@ describe('main/services/render-filter-service', () => {
     expect(result.filterParts[0]!).toContain('fade=out');
     expect(result.filterParts[2]!).toContain('fade=in');
     expect(result.filterParts[2]!).toContain('fade=out');
+  });
+
+  // ── buildAudioOverlayFilter tests ────────────────────────────────
+
+  test('buildAudioOverlayFilter returns empty for no overlays', () => {
+    const result = buildAudioOverlayFilter([], 2, 30);
+    expect(result.inputs).toEqual([]);
+    expect(result.filterParts).toEqual([]);
+    expect(result.labels).toEqual([]);
+  });
+
+  test('buildAudioOverlayFilter single overlay produces correct filter chain', () => {
+    const result = buildAudioOverlayFilter([
+      { id: 'ao1', trackIndex: 0, mediaPath: 'audio.mp3', startTime: 5, endTime: 15, sourceStart: 10, sourceEnd: 20, volume: 0.7, saved: false }
+    ], 3, 30);
+
+    expect(result.inputs).toHaveLength(1);
+    expect(result.inputs[0]).toEqual(['-i']);
+    expect(result.labels).toEqual(['audio_ovl_0']);
+    expect(result.filterParts).toHaveLength(1);
+
+    const filter = result.filterParts[0]!;
+    expect(filter).toContain('[3:a]');
+    expect(filter).toContain('atrim=start=10.000:end=20.000');
+    expect(filter).toContain('adelay=5000|5000');
+    expect(filter).toContain('volume=0.700');
+    expect(filter).toContain('afade=t=in:st=5.000:d=0.300');
+    expect(filter).toContain('afade=t=out:st=14.700:d=0.300');
+    expect(filter).toContain('apad=whole_dur=30.000');
+    expect(filter).toContain('[audio_ovl_0]');
+  });
+
+  test('buildAudioOverlayFilter omits fade-in at timeline start', () => {
+    const result = buildAudioOverlayFilter([
+      { id: 'ao1', trackIndex: 0, mediaPath: 'a.mp3', startTime: 0, endTime: 10, sourceStart: 0, sourceEnd: 10, volume: 1.0, saved: false }
+    ], 2, 30);
+
+    const filter = result.filterParts[0]!;
+    expect(filter).not.toContain('afade=t=in');
+    expect(filter).toContain('afade=t=out');
+  });
+
+  test('buildAudioOverlayFilter omits fade-out at timeline end', () => {
+    const result = buildAudioOverlayFilter([
+      { id: 'ao1', trackIndex: 0, mediaPath: 'a.mp3', startTime: 20, endTime: 30, sourceStart: 0, sourceEnd: 10, volume: 1.0, saved: false }
+    ], 2, 30);
+
+    const filter = result.filterParts[0]!;
+    expect(filter).toContain('afade=t=in');
+    expect(filter).not.toContain('afade=t=out');
+  });
+
+  test('buildAudioOverlayFilter omits volume filter when volume is 1.0', () => {
+    const result = buildAudioOverlayFilter([
+      { id: 'ao1', trackIndex: 0, mediaPath: 'a.mp3', startTime: 5, endTime: 15, sourceStart: 0, sourceEnd: 10, volume: 1.0, saved: false }
+    ], 2, 30);
+
+    const filter = result.filterParts[0]!;
+    expect(filter).not.toContain('volume=');
+  });
+
+  test('buildAudioOverlayFilter multiple overlays with sequential input indices', () => {
+    const result = buildAudioOverlayFilter([
+      { id: 'ao1', trackIndex: 0, mediaPath: 'a.mp3', startTime: 0, endTime: 10, sourceStart: 0, sourceEnd: 10, volume: 0.8, saved: false },
+      { id: 'ao2', trackIndex: 0, mediaPath: 'b.mp3', startTime: 15, endTime: 25, sourceStart: 0, sourceEnd: 10, volume: 0.5, saved: false }
+    ], 4, 30);
+
+    expect(result.inputs).toHaveLength(2);
+    expect(result.labels).toEqual(['audio_ovl_0', 'audio_ovl_1']);
+    expect(result.filterParts[0]!).toContain('[4:a]');
+    expect(result.filterParts[1]!).toContain('[5:a]');
   });
 });

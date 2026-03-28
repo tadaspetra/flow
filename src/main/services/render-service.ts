@@ -9,11 +9,14 @@ import {
   normalizeReelCropX,
   normalizeOutputMode,
   normalizePipScale,
-  EXPORT_AUDIO_PRESET_COMPRESSED
+  normalizeAudioVolume,
+  normalizeAudioOverlays,
+  EXPORT_AUDIO_PRESET_COMPRESSED,
+  EXPORT_AUDIO_PRESET_OFF
 } from '../../shared/domain/project.js';
 import { chooseRenderFps, probeVideoFpsWithFfmpeg } from './fps-service.js';
 import { runFfmpeg } from './ffmpeg-runner.js';
-import { buildFilterComplex, buildScreenFilter, buildOverlayFilter, resolveOutputSize } from './render-filter-service.js';
+import { buildFilterComplex, buildScreenFilter, buildOverlayFilter, buildAudioOverlayFilter, resolveOutputSize } from './render-filter-service.js';
 import { readJsonFile } from '../infra/file-system.js';
 import { subsampleTrail } from '../../shared/domain/mouse-trail.js';
 import ffmpegStatic from 'ffmpeg-static';
@@ -67,7 +70,8 @@ function normalizeSectionInput(rawSections: unknown): RenderSectionInput[] {
         backgroundPanX: normalizeBackgroundPan(section.backgroundPanX),
         backgroundPanY: normalizeBackgroundPan(section.backgroundPanY),
         reelCropX: normalizeReelCropX(section.reelCropX),
-        pipScale: normalizePipScale(section.pipScale)
+        pipScale: normalizePipScale(section.pipScale),
+        volume: normalizeAudioVolume(section.volume)
       };
     })
     .filter((s): s is RenderSectionInput => s !== null);
@@ -337,6 +341,7 @@ async function renderComposite(
   const overlays = Array.isArray(opts.overlays)
     ? opts.overlays.filter(o => o && o.mediaPath && o.mediaType).sort((a, b) => (a.trackIndex || 0) - (b.trackIndex || 0) || a.startTime - b.startTime)
     : [];
+  const audioOverlays = normalizeAudioOverlays(opts.audioOverlays);
   const pipSize = Number.isFinite(Number(opts.pipSize)) ? Number(opts.pipSize) : 422;
   const screenFitMode = opts.screenFitMode === 'fit' ? 'fit' as const : 'fill' as const;
   const exportAudioPreset = normalizeExportAudioPreset(opts.exportAudioPreset);
@@ -404,16 +409,32 @@ async function renderComposite(
     filterParts.push(
       `[${screenIdx}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,fps=fps=${targetFps},setsar=1[sv${i}]`
     );
-    filterParts.push(`[${screenIdx}:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[sa${i}]`);
+    const sectionVolume = section.volume;
+    const volumeFilter = (audioOverlays.length > 0 && exportAudioPreset === EXPORT_AUDIO_PRESET_OFF)
+      ? ',volume=0'
+      : (Math.abs(sectionVolume - 1.0) > 0.0001 ? `,volume=${sectionVolume.toFixed(3)}` : '');
+    filterParts.push(`[${screenIdx}:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS${volumeFilter}[sa${i}]`);
   }
 
   const screenLabels = sections.map((_, index) => `[sv${index}][sa${index}]`).join('');
-  filterParts.push(`${screenLabels}concat=n=${sections.length}:v=1:a=1[screen_raw][audio_out]`);
-  const exportAudioLabel = buildExportAudioLabel(exportAudioPreset);
-  if (exportAudioLabel === 'audio_final') {
-    filterParts.push(
-      '[audio_out]acompressor=threshold=0.125:ratio=3:attack=20:release=250:makeup=1.5[audio_final]'
-    );
+  const hasAudioOverlays = audioOverlays.length > 0;
+  const screenAudioLabel = hasAudioOverlays ? 'screen_audio' : 'audio_out';
+  filterParts.push(`${screenLabels}concat=n=${sections.length}:v=1:a=1[screen_raw][${screenAudioLabel}]`);
+
+  // Determine final audio label based on audio overlays and export preset
+  let exportAudioLabel: string;
+  if (hasAudioOverlays) {
+    // Audio overlays will be mixed in later; exportAudioLabel will be set after mixing
+    exportAudioLabel = 'mixed_audio';
+  } else if (exportAudioPreset === EXPORT_AUDIO_PRESET_OFF) {
+    exportAudioLabel = 'audio_out';
+  } else {
+    exportAudioLabel = buildExportAudioLabel(exportAudioPreset);
+    if (exportAudioLabel === 'audio_final') {
+      filterParts.push(
+        '[audio_out]acompressor=threshold=0.125:ratio=3:attack=20:release=250:makeup=1.5[audio_final]'
+      );
+    }
   }
 
   if (hasCamera) {
@@ -505,6 +526,36 @@ async function renderComposite(
     const lastIdx = filterParts.length - 1;
     if (lastIdx >= 0) {
       filterParts[lastIdx] = filterParts[lastIdx]!.replace(/\[ovl_\d+\]$/, finalOvlLabel);
+    }
+  }
+
+  // Audio overlay filters (mix external audio with screen audio)
+  if (hasAudioOverlays) {
+    let audioInputOffset = 0;
+    for (const a of args) { if (a === '-i') audioInputOffset += 1; }
+    const audioResult = buildAudioOverlayFilter(audioOverlays, audioInputOffset, totalDurationSec);
+    // Add audio overlay file inputs
+    for (let i = 0; i < audioResult.inputs.length; i++) {
+      const inputArgs = audioResult.inputs[i]!;
+      const ao = audioOverlays[i]!;
+      const mediaAbsPath = path.join(outputFolder, ao.mediaPath);
+      args.push(...inputArgs, mediaAbsPath);
+    }
+    // Append audio overlay filter parts
+    for (const part of audioResult.filterParts) {
+      filterParts.push(part);
+    }
+    // amix: combine screen audio with all audio overlay streams
+    const amixInputs = [`[${screenAudioLabel}]`, ...audioResult.labels.map(l => `[${l}]`)].join('');
+    const amixCount = 1 + audioResult.labels.length;
+    filterParts.push(`${amixInputs}amix=inputs=${amixCount}:duration=first:normalize=0[mixed_audio]`);
+
+    // Apply compression after mix if needed
+    if (exportAudioPreset === EXPORT_AUDIO_PRESET_COMPRESSED) {
+      filterParts.push(
+        '[mixed_audio]acompressor=threshold=0.125:ratio=3:attack=20:release=250:makeup=1.5[audio_final]'
+      );
+      exportAudioLabel = 'audio_final';
     }
   }
 

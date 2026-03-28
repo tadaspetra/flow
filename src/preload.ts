@@ -48,8 +48,11 @@ const api: ElectronAPI = {
   cleanupDeleted: (projectPath) => ipcRenderer.invoke('project:cleanupDeleted', projectPath),
   cleanupUnusedTakes: (projectPath) => ipcRenderer.invoke('project:cleanupUnusedTakes', projectPath),
   importOverlayMedia: (projectPath, sourcePath) => ipcRenderer.invoke('project:importOverlayMedia', projectPath, sourcePath),
+  importAudioOverlayMedia: (projectPath, sourcePath) => ipcRenderer.invoke('project:importAudioOverlayMedia', projectPath, sourcePath),
   stageOverlayFile: (projectPath, mediaPath) => ipcRenderer.invoke('project:stageOverlayFile', projectPath, mediaPath),
   unstageOverlayFile: (projectPath, mediaPath) => ipcRenderer.invoke('project:unstageOverlayFile', projectPath, mediaPath),
+  stageAudioOverlayFile: (projectPath, mediaPath) => ipcRenderer.invoke('project:stageAudioOverlayFile', projectPath, mediaPath),
+  unstageAudioOverlayFile: (projectPath, mediaPath) => ipcRenderer.invoke('project:unstageAudioOverlayFile', projectPath, mediaPath),
   getFilePathFromDrop: (file) => {
     try { return webUtils.getPathForFile(file); } catch (_) { return null; }
   },

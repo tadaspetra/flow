@@ -4,6 +4,7 @@ import type {
   Section,
   Keyframe,
   Overlay,
+  AudioOverlay,
   OverlayPosition,
   OutputMode,
   ExportAudioPreset,
@@ -21,6 +22,7 @@ export type {
   Section,
   Keyframe,
   Overlay,
+  AudioOverlay,
   OverlayPosition,
   OutputMode,
   ExportAudioPreset,
@@ -48,6 +50,9 @@ export {
   MAX_PIP_SCALE,
   DEFAULT_PIP_SCALE,
   MAX_OVERLAY_TRACKS,
+  MAX_AUDIO_TRACKS,
+  DEFAULT_AUDIO_VOLUME,
+  AUDIO_OVERLAY_EXTENSIONS,
   EXPORT_AUDIO_PRESET_OFF,
   EXPORT_AUDIO_PRESET_COMPRESSED,
   OUTPUT_MODE_LANDSCAPE,
@@ -74,6 +79,8 @@ import {
   MAX_PIP_SCALE,
   DEFAULT_PIP_SCALE,
   MAX_OVERLAY_TRACKS,
+  MAX_AUDIO_TRACKS,
+  DEFAULT_AUDIO_VOLUME,
   EXPORT_AUDIO_PRESET_OFF,
   EXPORT_AUDIO_PRESET_COMPRESSED,
   OUTPUT_MODE_LANDSCAPE,
@@ -89,6 +96,7 @@ import {
 type RawRecord = Record<string, any>;
 
 let overlayIdCounter = 0;
+let audioOverlayIdCounter = 0;
 
 export function createProjectId(): string {
   return `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -97,6 +105,18 @@ export function createProjectId(): string {
 export function generateOverlayId(): string {
   overlayIdCounter += 1;
   return `overlay-${Date.now()}-${overlayIdCounter}`;
+}
+
+export function generateAudioOverlayId(): string {
+  audioOverlayIdCounter += 1;
+  return `audio-overlay-${Date.now()}-${audioOverlayIdCounter}`;
+}
+
+export function normalizeAudioVolume(value: unknown): number {
+  if (value === null || value === undefined) return DEFAULT_AUDIO_VOLUME;
+  const v = Number(value);
+  if (!Number.isFinite(v)) return DEFAULT_AUDIO_VOLUME;
+  return Math.max(0, Math.min(1, v));
 }
 
 export function sanitizeProjectName(name: unknown): string {
@@ -166,7 +186,8 @@ export function normalizeSections(rawSections: unknown = []): Section[] {
         sourceEnd: Number.isFinite(sourceEnd) ? sourceEnd : 0,
         takeId: typeof section.takeId === 'string' && section.takeId ? section.takeId : null,
         transcript,
-        saved: !!section.saved
+        saved: !!section.saved,
+        volume: normalizeAudioVolume(section.volume)
       };
     })
     .filter((section) => section.end - section.start > 0.0001)
@@ -346,6 +367,75 @@ export function normalizeOverlays(rawOverlays: unknown): Overlay[] {
   return result;
 }
 
+export function normalizeAudioOverlays(rawAudioOverlays: unknown): AudioOverlay[] {
+  if (!Array.isArray(rawAudioOverlays)) return [];
+  const valid = (rawAudioOverlays as RawRecord[])
+    .filter((overlay): overlay is RawRecord => {
+      if (!overlay || typeof overlay !== 'object') return false;
+      if (typeof overlay.id !== 'string' || !overlay.id) return false;
+      if (typeof overlay.mediaPath !== 'string' || !overlay.mediaPath) return false;
+      const start = Number(overlay.startTime);
+      const end = Number(overlay.endTime);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+      if (end <= start) return false;
+      return true;
+    })
+    .map((overlay) => {
+      const startTime = Math.max(0, Number(overlay.startTime));
+      const endTime = Math.max(startTime + 0.001, Number(overlay.endTime));
+      const duration = endTime - startTime;
+      let sourceStart = Number.isFinite(Number(overlay.sourceStart)) ? Math.max(0, Number(overlay.sourceStart)) : 0;
+      let sourceEnd = Number.isFinite(Number(overlay.sourceEnd)) && Number(overlay.sourceEnd) > sourceStart
+        ? Number(overlay.sourceEnd)
+        : sourceStart + duration;
+      if (sourceEnd <= sourceStart) {
+        sourceStart = 0;
+        sourceEnd = duration;
+      }
+      const rawTrack = Number(overlay.trackIndex);
+      const trackIndex = Number.isFinite(rawTrack) && rawTrack >= 0
+        ? Math.min(Math.floor(rawTrack), MAX_AUDIO_TRACKS - 1)
+        : 0;
+      return {
+        id: overlay.id as string,
+        trackIndex,
+        mediaPath: overlay.mediaPath as string,
+        startTime,
+        endTime,
+        sourceStart,
+        sourceEnd,
+        volume: normalizeAudioVolume(overlay.volume),
+        saved: !!overlay.saved
+      };
+    });
+
+  // Group by trackIndex, enforce no-overlap within each track
+  const tracks: Record<number, AudioOverlay[]> = {};
+  for (const o of valid) {
+    if (!tracks[o.trackIndex]) tracks[o.trackIndex] = [];
+    tracks[o.trackIndex]!.push(o);
+  }
+  const result: AudioOverlay[] = [];
+  for (const trackIdx of Object.keys(tracks).sort((a, b) => Number(a) - Number(b))) {
+    const group = tracks[Number(trackIdx)]!.sort((a, b) => a.startTime - b.startTime);
+    for (let i = 1; i < group.length; i += 1) {
+      const prev = group[i - 1]!;
+      if (group[i]!.startTime < prev.endTime) {
+        const shift = prev.endTime - group[i]!.startTime;
+        group[i]!.startTime = prev.endTime;
+        group[i]!.sourceStart += shift;
+      }
+      if (group[i]!.endTime <= group[i]!.startTime) {
+        group.splice(i, 1);
+        i -= 1;
+      }
+    }
+    result.push(...group);
+  }
+
+  return result;
+}
+
 export function createDefaultProject(name = 'Untitled Project'): Project {
   const now = new Date().toISOString();
   return {
@@ -372,7 +462,9 @@ export function createDefaultProject(name = 'Untitled Project'): Project {
       sourceWidth: null,
       sourceHeight: null,
       overlays: [],
-      savedOverlays: []
+      savedOverlays: [],
+      audioOverlays: [],
+      savedAudioOverlays: []
     }
   };
 }
@@ -435,7 +527,9 @@ export function normalizeProjectData(rawProject: unknown, projectFolder?: string
         ? Number(rawTimeline.sourceHeight)
         : null,
       overlays: normalizeOverlays(rawTimeline.overlays),
-      savedOverlays: normalizeOverlays(rawTimeline.savedOverlays)
+      savedOverlays: normalizeOverlays(rawTimeline.savedOverlays),
+      audioOverlays: normalizeAudioOverlays(rawTimeline.audioOverlays),
+      savedAudioOverlays: normalizeAudioOverlays(rawTimeline.savedAudioOverlays)
     } as ProjectTimeline
   };
 }

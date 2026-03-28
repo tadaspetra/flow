@@ -56,8 +56,11 @@ interface ProjectServiceLike {
   cleanupDeletedFolder(projectPath: string): void;
   cleanupUnusedTakes(projectPath: string): CleanupResult;
   importOverlayMedia(projectPath: string, sourcePath: string): string;
+  importAudioOverlayMedia(projectPath: string, sourcePath: string): { mediaPath: string; duration: number };
   stageOverlayFile(projectPath: string, mediaPath: string): void;
   unstageOverlayFile(projectPath: string, mediaPath: string): void;
+  stageAudioOverlayFile(projectPath: string, mediaPath: string): void;
+  unstageAudioOverlayFile(projectPath: string, mediaPath: string): void;
   saveMouseTrail(projectPath: string, suffix: string, trailData: unknown): string;
 }
 
@@ -249,12 +252,24 @@ export function registerIpcHandlers({
     return projectService.importOverlayMedia(projectPath, sourcePath);
   });
 
+  ipcMain.handle('project:importAudioOverlayMedia', async (_event: IpcMainInvokeEvent, projectPath: string, sourcePath: string) => {
+    return projectService.importAudioOverlayMedia(projectPath, sourcePath);
+  });
+
   ipcMain.handle('project:stageOverlayFile', async (_event: IpcMainInvokeEvent, projectPath: string, mediaPath: string) => {
     return projectService.stageOverlayFile(projectPath, mediaPath);
   });
 
   ipcMain.handle('project:unstageOverlayFile', async (_event: IpcMainInvokeEvent, projectPath: string, mediaPath: string) => {
     return projectService.unstageOverlayFile(projectPath, mediaPath);
+  });
+
+  ipcMain.handle('project:stageAudioOverlayFile', async (_event: IpcMainInvokeEvent, projectPath: string, mediaPath: string) => {
+    return projectService.stageAudioOverlayFile(projectPath, mediaPath);
+  });
+
+  ipcMain.handle('project:unstageAudioOverlayFile', async (_event: IpcMainInvokeEvent, projectPath: string, mediaPath: string) => {
+    return projectService.unstageAudioOverlayFile(projectPath, mediaPath);
   });
 
   ipcMain.handle('get-cursor-position', () => {

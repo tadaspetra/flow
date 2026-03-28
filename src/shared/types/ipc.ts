@@ -45,8 +45,11 @@ export interface ElectronAPI {
   cleanupDeleted(projectPath: string): Promise<void>;
   cleanupUnusedTakes(projectPath: string): Promise<CleanupResult>;
   importOverlayMedia(projectPath: string, sourcePath: string): Promise<string>;
+  importAudioOverlayMedia(projectPath: string, sourcePath: string): Promise<{ mediaPath: string; duration: number }>;
   stageOverlayFile(projectPath: string, mediaPath: string): Promise<void>;
   unstageOverlayFile(projectPath: string, mediaPath: string): Promise<void>;
+  stageAudioOverlayFile(projectPath: string, mediaPath: string): Promise<void>;
+  unstageAudioOverlayFile(projectPath: string, mediaPath: string): Promise<void>;
   getFilePathFromDrop(file: File): string | null;
   getCursorPosition(): Promise<{ x: number; y: number }>;
   startMouseTrail(): Promise<void>;
