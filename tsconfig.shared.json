@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist/shared",
+    "rootDir": "src/shared",
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/shared/**/*.ts"]
+}

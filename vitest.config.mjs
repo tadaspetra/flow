@@ -4,13 +4,17 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['tests/**/*.test.js', 'tests/**/*.test.mjs'],
+    include: ['tests/**/*.test.ts'],
     exclude: ['tests/e2e/**'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
-      include: ['src/main/services/**/*.js', 'src/main/infra/**/*.js', 'src/shared/**/*.js'],
-      exclude: ['src/main.js', 'src/index.html', 'src/audio-processor.js'],
+      include: ['src/main/services/**/*.ts', 'src/main/infra/**/*.ts', 'src/shared/domain/**/*.ts'],
+      exclude: [
+        'src/main.ts', 'src/index.html',
+        'src/audio-processor.ts',
+        'src/shared/types/**'
+      ],
       thresholds: {
         lines: 70,
         functions: 70,

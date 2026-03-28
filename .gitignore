@@ -1,6 +1,7 @@
 node_modules
 out
 dist
+*.tsbuildinfo
 coverage
 dist-smoke
 .env

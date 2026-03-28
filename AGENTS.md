@@ -40,11 +40,11 @@ For any non-trivial change, follow this order:
 
 Current intended structure:
 
-- `src/main/`
+- `src/main/` (`.ts`)
   - Electron runtime bootstrapping, IPC registration, services, infra
-- `src/shared/`
-  - domain rules, normalization, data-shape helpers shared across layers
-- `src/renderer/`
+- `src/shared/` (`.ts`)
+  - domain rules, normalization, data-shape helpers, type definitions shared across layers
+- `src/renderer/` (`.ts`)
   - renderer entrypoint and feature utilities
 - `tests/unit/`
   - pure logic and isolated helper tests
@@ -115,7 +115,9 @@ Use npm only in this repo.
 
 Primary commands:
 
-- `npm run build:styles`
+- `npm run build` (compiles TypeScript via `tsc --build`, copies assets, builds Tailwind)
+- `npm run build:ts` (TypeScript compilation only)
+- `npm run clean` (removes `dist/` and `.tsbuildinfo` files)
 - `npm run lint`
 - `npm run typecheck`
 - `npm run test`
@@ -132,8 +134,11 @@ If `npm run check` is too slow during iteration, run a narrower loop while devel
 ## Build And Runtime Notes
 
 - Start the app with `npm run dev` or `npm start`, not raw `electron .`
-  - this ensures renderer styles are rebuilt first
-- Tailwind output is generated into `src/renderer/styles/main.css`
+  - this compiles TypeScript to `dist/`, copies assets, builds styles, then launches Electron
+- The app runs from `dist/` (compiled output), not from `src/` directly
+- TypeScript is compiled with `strict: true` and project references enforcing module boundaries
+- Tailwind output is generated into `dist/renderer/styles/main.css`
+- All source files are `.ts` — do not add `.js` source files to `src/`
 - Do not reintroduce Tailwind CDN loading
 - Keep the stricter CSP in `src/index.html`
 

@@ -1,16 +1,9 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "allowJs": true,
-    "checkJs": false,
-    "noEmit": true,
-    "strict": false,
-    "skipLibCheck": true,
-    "types": ["node", "vitest/globals"],
-    "lib": ["ES2022", "DOM"]
-  },
-  "include": ["src/**/*.js", "tests/**/*.js", "tests/**/*.mjs", "*.mjs"],
-  "exclude": ["node_modules", "dist", "out", "coverage"]
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.shared.json" },
+    { "path": "./tsconfig.main.json" },
+    { "path": "./tsconfig.preload.json" },
+    { "path": "./tsconfig.renderer.json" }
+  ]
 }

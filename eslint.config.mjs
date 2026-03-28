@@ -1,5 +1,6 @@
 import js from '@eslint/js';
 import globals from 'globals';
+import tseslint from 'typescript-eslint';
 
 export default [
   {
@@ -13,8 +14,9 @@ export default [
     ]
   },
   js.configs.recommended,
+  ...tseslint.configs.recommended,
   {
-    files: ['src/**/*.js', 'tests/**/*.js'],
+    files: ['src/**/*.ts', 'tests/**/*.ts'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'commonjs',
@@ -23,11 +25,24 @@ export default [
       }
     },
     rules: {
-      'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }]
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+      'no-unused-vars': 'off'
     }
   },
   {
-    files: ['src/renderer/**/*.js'],
+    files: ['**/*.mjs', '**/*.cjs'],
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off'
+    }
+  },
+  {
+    files: ['tests/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off'
+    }
+  },
+  {
+    files: ['src/renderer/**/*.ts'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
@@ -38,7 +53,7 @@ export default [
     }
   },
   {
-    files: ['src/audio-processor.js'],
+    files: ['src/audio-processor.ts'],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -48,7 +63,7 @@ export default [
     }
   },
   {
-    files: ['tests/**/*.js'],
+    files: ['tests/**/*.ts'],
     languageOptions: {
       globals: {
         ...globals.node,
@@ -62,7 +77,17 @@ export default [
     }
   },
   {
-    files: ['*.mjs', 'scripts/**/*.mjs', 'tests/**/*.mjs', '.github/**/*.js'],
+    files: ['*.cjs', '**/*.cjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'commonjs',
+      globals: {
+        ...globals.node
+      }
+    }
+  },
+  {
+    files: ['*.mjs', 'scripts/**/*.mjs', '.github/**/*.js'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
