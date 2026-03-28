@@ -143,6 +143,9 @@ What would you like to do?
 - Update task checkbox immediately after completing each task
 - Pause on errors, blockers, or unclear requirements - don't guess
 - Use contextFiles from CLI output, don't assume specific file names
+- DONT BE LAZY, we perfer hard work over speed, and deep thinking quality over fast results.
+- Think this thorugh, every part of it, how dose that connect to the existing, if we have, what it modifying and adding to the project.
+
 
 **Fluid Workflow Integration**
 

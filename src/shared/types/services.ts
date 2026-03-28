@@ -205,6 +205,28 @@ export interface PickFolderOptions {
   buttonLabel?: string;
 }
 
+// ── Thumbnail capture ────────────────────────────────────────────────
+
+export interface ThumbnailCaptureOptions {
+  takes: Array<{ id: string; screenPath?: string | null; cameraPath?: string | null; mousePath?: string | null }>;
+  keyframes: Keyframe[];
+  overlays: Overlay[];
+  sourceTime: number;
+  cameraSyncOffsetMs: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  outputMode: OutputMode;
+  screenFitMode: ScreenFitMode;
+  pipSize: number;
+  projectFolder: string;
+}
+
+export interface ThumbnailCaptureDeps {
+  runFfmpeg: (opts: FfmpegRunOptions) => Promise<{ stderr: string }>;
+  ffmpegPath: string;
+  now: () => number;
+}
+
 // ── File system ──────────────────────────────────────────────────────
 
 export interface OverlayFilterResult {

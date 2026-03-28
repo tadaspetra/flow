@@ -15,7 +15,8 @@ import type {
   RenderOptions,
   ProxyGenerateOptions,
   ComputeSectionsOptions,
-  ComputeSectionsResult
+  ComputeSectionsResult,
+  ThumbnailCaptureOptions
 } from './services.js';
 import type { MouseTrailEntry, MouseTrailData } from './mouse-trail.js';
 
@@ -57,4 +58,5 @@ export interface ElectronAPI {
   saveMouseTrail(projectPath: string, suffix: string, trailData: MouseTrailData): Promise<string>;
   generateProxy(opts: ProxyGenerateOptions): Promise<string | null>;
   onProxyProgress(listener: (update: ProxyProgressEvent) => void): () => void;
+  captureThumbnail(opts: ThumbnailCaptureOptions): Promise<string>;
 }

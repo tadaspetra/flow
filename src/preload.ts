@@ -66,7 +66,8 @@ const api: ElectronAPI = {
     const handler = (_event: IpcRendererEvent, payload: unknown) => listener(payload as Parameters<typeof listener>[0]);
     ipcRenderer.on('proxy:progress', handler);
     return () => ipcRenderer.removeListener('proxy:progress', handler);
-  }
+  },
+  captureThumbnail: (opts) => ipcRenderer.invoke('capture-thumbnail', opts)
 };
 
 contextBridge.exposeInMainWorld('electronAPI', api);

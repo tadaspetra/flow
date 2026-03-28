@@ -6132,6 +6132,20 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       await renderVideo();
     });
 
+    let thumbnailToastTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function showThumbnailToast(message: string): void {
+      const toast = document.getElementById('editorThumbnailToast');
+      if (!toast) return;
+      toast.textContent = message;
+      toast.classList.remove('hidden');
+      if (thumbnailToastTimer) clearTimeout(thumbnailToastTimer);
+      thumbnailToastTimer = setTimeout(() => {
+        toast.classList.add('hidden');
+        thumbnailToastTimer = null;
+      }, 2000);
+    }
+
     function setRenderBtnState(text: string, style = 'idle'): void {
       if (editorRenderTimeout) clearTimeout(editorRenderTimeout);
       editorRenderBtn.textContent = text;
@@ -6143,6 +6157,83 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
         editorRenderBtn.className = 'px-4 py-1.5 bg-red-600 text-white rounded-lg text-sm font-medium transition-colors min-w-[80px] text-center';
       } else {
         editorRenderBtn.className = 'px-4 py-1.5 bg-white text-neutral-950 hover:bg-neutral-200 rounded-lg text-sm font-medium transition-colors min-w-[80px] text-center';
+      }
+    }
+
+    let capturingThumbnail = false;
+
+    async function captureThumbnailFrame(): Promise<void> {
+      if (capturingThumbnail || !editorState || !activeProjectPath) return;
+
+      const resolved = resolveTimeToSource(editorState.currentTime);
+      if (!resolved) return;
+
+      const take = activeProject?.takes?.find((t: Take) => t.id === resolved.takeId);
+      if (!take?.screenPath) return;
+
+      capturingThumbnail = true;
+      showThumbnailToast('Capturing...');
+
+      try {
+        // Frozen keyframe: interpolated visual state at current time, placed at time 0
+        const state = getStateAtTime(editorState.currentTime);
+        const frozenKeyframe: Keyframe = {
+          time: 0,
+          pipX: state.pipX,
+          pipY: state.pipY,
+          pipVisible: state.pipVisible,
+          cameraFullscreen: state.cameraFullscreen,
+          backgroundZoom: state.backgroundZoom,
+          backgroundPanX: state.backgroundPanX,
+          backgroundPanY: state.backgroundPanY,
+          reelCropX: state.reelCropX,
+          pipScale: state.pipScale,
+          pipSnapPoint: state.pipSnapPoint,
+          autoTrack: state.autoTrack,
+          autoTrackSmoothing: state.autoTrackSmoothing,
+          sectionId: null,
+          autoSection: false,
+          savedLandscape: null,
+          savedReel: null,
+          backgroundFocusX: state.backgroundFocusX,
+          backgroundFocusY: state.backgroundFocusY
+        };
+
+        // Filter overlays visible at current time, adjusted for single-frame capture
+        const currentTime = editorState.currentTime;
+        const visibleOverlays = (editorState.overlays || [])
+          .filter(o => o.startTime <= currentTime && currentTime < o.endTime)
+          .map(o => {
+            const delta = currentTime - o.startTime;
+            return {
+              ...o,
+              startTime: 0,
+              endTime: 0.1,
+              sourceStart: o.mediaType === 'video' ? o.sourceStart + delta : o.sourceStart,
+              sourceEnd: o.mediaType === 'video' ? o.sourceStart + delta + 0.1 : o.sourceEnd
+            };
+          });
+
+        await window.electronAPI.captureThumbnail({
+          takes: [{ id: take.id, screenPath: take.screenPath, cameraPath: take.cameraPath, mousePath: take.mousePath || null }],
+          keyframes: [frozenKeyframe],
+          overlays: visibleOverlays,
+          sourceTime: resolved.sourceTime,
+          cameraSyncOffsetMs: editorState.cameraSyncOffsetMs,
+          sourceWidth: editorState.sourceWidth || CANVAS_W,
+          sourceHeight: editorState.sourceHeight || CANVAS_H,
+          outputMode: editorState.outputMode || 'landscape',
+          screenFitMode: editorState.screenFitMode as 'fit' | 'fill',
+          pipSize: editorState.pipSize,
+          projectFolder: activeProjectPath
+        });
+
+        showThumbnailToast('Thumbnail saved');
+      } catch (err) {
+        console.error('Thumbnail capture error:', err);
+        showThumbnailToast('Capture failed');
+      } finally {
+        capturingThumbnail = false;
       }
     }
 
@@ -6292,6 +6383,12 @@ type AppMediaRecorder = MediaRecorder & { blobPromise: Promise<{ blob: Blob; pat
       if (e.code === 'KeyZ' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         if (e.shiftKey) { editorRedo(); } else { editorUndo(); }
+        return;
+      }
+
+      if (e.code === 'KeyT' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        captureThumbnailFrame();
         return;
       }
 

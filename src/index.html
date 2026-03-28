@@ -192,6 +192,7 @@
       <!-- Editor canvas -->
       <div class="flex-1 bg-black overflow-hidden relative flex items-center justify-center rounded-xl border border-neutral-800 min-h-0">
         <canvas id="editorCanvas" class="w-full h-full object-contain" style="aspect-ratio: 16/9;"></canvas>
+        <div id="editorThumbnailToast" class="hidden absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-neutral-800 text-white text-sm rounded-lg shadow-lg pointer-events-none z-30"></div>
       </div>
 
       <!-- Timeline scrubber -->
@@ -256,7 +257,7 @@
         </div>
       </div>
       <div class="text-[11px] text-neutral-600 text-center">
-        <span class="text-neutral-500">⌘Z</span> undo · <span class="text-neutral-500">⇧⌘Z</span> redo · <span class="text-neutral-500">Space</span> play/pause · <span class="text-neutral-500">L</span> speed · <span class="text-neutral-500">S</span> split · <span class="text-neutral-500">C</span> camera · <span class="text-neutral-500">F</span> fullscreen · <span class="text-neutral-500">← →</span> frame · <span class="text-neutral-500">⌘← ⌘→</span> 5 frames · <span class="text-neutral-500">↑ ↓</span> boundaries · <span class="text-neutral-500">⌫</span> delete
+        <span class="text-neutral-500">⌘Z</span> undo · <span class="text-neutral-500">⇧⌘Z</span> redo · <span class="text-neutral-500">Space</span> play/pause · <span class="text-neutral-500">L</span> speed · <span class="text-neutral-500">S</span> split · <span class="text-neutral-500">C</span> camera · <span class="text-neutral-500">F</span> fullscreen · <span class="text-neutral-500">← →</span> frame · <span class="text-neutral-500">⌘← ⌘→</span> 5 frames · <span class="text-neutral-500">↑ ↓</span> boundaries · <span class="text-neutral-500">⌫</span> delete · <span class="text-neutral-500">⌘T</span> thumbnail
       </div>
     </div>
   </div>

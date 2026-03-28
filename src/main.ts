@@ -8,6 +8,7 @@ import { createWindow } from './main/app/create-window.js';
 import { registerIpcHandlers } from './main/ipc/register-handlers.js';
 import { createProjectService } from './main/services/project-service.js';
 import { renderComposite } from './main/services/render-service.js';
+import { captureThumbnail } from './main/services/thumbnail-service.js';
 import { computeSections } from './main/services/sections-service.js';
 import { getScribeToken } from './main/services/scribe-service.js';
 import * as proxyService from './main/services/proxy-service.js';
@@ -26,6 +27,7 @@ const { cleanupMouseTrailTimer } = registerIpcHandlers({
   screen,
   projectService,
   renderComposite,
+  captureThumbnail,
   computeSections,
   getScribeToken,
   proxyService

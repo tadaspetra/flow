@@ -25,7 +25,8 @@ import type {
   RecentProjectsResult,
   CleanupResult,
   RenderOptions,
-  RenderDeps
+  RenderDeps,
+  ThumbnailCaptureOptions
 } from '../../shared/types/services.js';
 
 import type { MouseTrailEntry } from '../../shared/types/mouse-trail.js';
@@ -86,6 +87,9 @@ export interface RegisterIpcDeps {
     opts: Partial<RenderOptions>,
     deps: Partial<RenderDeps>
   ) => Promise<string>;
+  captureThumbnail: (
+    opts: Partial<ThumbnailCaptureOptions>
+  ) => Promise<string>;
   computeSections: (opts: ComputeSectionsOptions) => ComputeSectionsResult;
   getScribeToken: () => Promise<string>;
   proxyService: ProxyServiceLike | null;
@@ -101,6 +105,7 @@ export function registerIpcHandlers({
   screen,
   projectService,
   renderComposite,
+  captureThumbnail,
   computeSections,
   getScribeToken,
   proxyService
@@ -217,6 +222,10 @@ export function registerIpcHandlers({
         event.sender.send('render-composite-progress', progress);
       }
     });
+  });
+
+  ipcMain.handle('capture-thumbnail', async (_event: IpcMainInvokeEvent, opts: Partial<ThumbnailCaptureOptions>) => {
+    return captureThumbnail(opts);
   });
 
   ipcMain.handle('get-scribe-token', async () => {
