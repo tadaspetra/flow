@@ -727,6 +727,48 @@ describe('main/services/render-service', () => {
     expect(argString).toContain('[1:v]trim=start=1.000:end=2.000,setpts=PTS-STARTPTS[cv1]');
   });
 
+  test('renderComposite normalizes concatenated camera video before overlay composition', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-camera-cfr-'));
+    const outputDir = path.join(tmpDir, 'out');
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    const cameraPath = path.join(tmpDir, 'camera.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+    fs.writeFileSync(cameraPath, 'camera', 'utf8');
+
+    const execCalls: { bin: string; args: string[] }[] = [];
+    await renderComposite(
+      {
+        outputFolder: outputDir,
+        takes: [{ id: 'take-1', screenPath, cameraPath }],
+        sections: [
+          { takeId: 'take-1', sourceStart: 0, sourceEnd: 1.0 },
+          { takeId: 'take-1', sourceStart: 1.0, sourceEnd: 2.0 }
+        ],
+        keyframes: [
+          { time: 0, pipX: 10, pipY: 10, pipVisible: true, cameraFullscreen: false }
+        ] as Keyframe[],
+        pipSize: 300,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        screenFitMode: 'fill'
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 223,
+        probeVideoFpsWithFfmpeg: async () => 29.97,
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
+          execCalls.push({ bin: ffmpegPath, args });
+        })
+      }
+    );
+
+    const argString = execCalls[0].args.join(' ');
+    expect(argString).toContain('[cv0][cv1]concat=n=2:v=1:a=0[camera_raw]');
+    expect(argString).toContain('[camera_raw]fps=fps=30:round=near[camera_cfr]');
+    expect(argString).toContain('[camera_cfr]setpts=PTS-STARTPTS,hflip,crop=');
+    expect(argString).not.toContain('[camera_raw]setpts=PTS-STARTPTS,hflip,crop=');
+  });
+
   test('renderComposite keeps reused input indexes stable across mixed take ordering', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-mixed-dedupe-'));
     const outputDir = path.join(tmpDir, 'out');

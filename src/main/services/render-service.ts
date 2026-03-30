@@ -512,6 +512,9 @@ export async function renderComposite(
 
     const cameraLabels = sections.map((_, index) => `[cv${index}]`).join('');
     filterParts.push(`${cameraLabels}concat=n=${sections.length}:v=1:a=0[camera_raw]`);
+    // Align the concatenated camera stream to the render cadence before overlay so
+    // ffmpeg does not hold stale camera frames against the screen timeline.
+    filterParts.push(`[camera_raw]fps=fps=${targetFps}:round=near[camera_cfr]`);
     const overlayFilter = buildFilterComplex(
       keyframes,
       pipSize,
@@ -525,7 +528,7 @@ export async function renderComposite(
     assertOverlayFilterSize(overlayFilter);
     const adaptedOverlay = overlayFilter
       .replace(/\[0:v\]/g, '[screen_raw]')
-      .replace(/\[1:v\]/g, '[camera_raw]');
+      .replace(/\[1:v\]/g, '[camera_cfr]');
     filterParts.push(adaptedOverlay);
   } else {
     const screenOnlyFilter = buildScreenFilter(
