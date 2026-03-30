@@ -293,18 +293,18 @@ export function buildFilterComplex(
     const xExpr = buildPosExpr(scaledKeyframes, 'pipX');
     const yExpr = buildPosExpr(scaledKeyframes, 'pipY');
 
-    return `${screenFilter};[1:v]split[cam1][cam2];${camPipFilter};${camFullFilter};[screen][cam]overlay=x='${xExpr}':y='${yExpr}':format=auto[with_pip];[with_pip][camfull]overlay=0:0:format=auto[out]`;
+    return `${screenFilter};[1:v]setpts=PTS-STARTPTS,hflip,split[cam1][cam2];${camPipFilter};${camFullFilter};[screen][cam]overlay=x='${xExpr}':y='${yExpr}':format=auto[with_pip];[with_pip][camfull]overlay=0:0:format=auto[out]`;
   }
 
   if (hasCamFull) {
     const camFullAlpha = buildCamFullAlphaExpr(keyframes);
-    const camFullFilter = `[1:v]setpts=PTS-STARTPTS,scale=${outW}:${outH}:flags=lanczos:force_original_aspect_ratio=increase,crop=${outW}:${outH},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*(${camFullAlpha})'[camfull]`;
+    const camFullFilter = `[1:v]setpts=PTS-STARTPTS,hflip,scale=${outW}:${outH}:flags=lanczos:force_original_aspect_ratio=increase,crop=${outW}:${outH},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*(${camFullAlpha})'[camfull]`;
     return `${screenFilter};${camFullFilter};[screen][camfull]overlay=0:0:format=auto[out]`;
   }
 
   const alphaExpr = buildAlphaExpr(keyframes);
   const roundCornerExpr = `lte(pow(max(0,max(${radius}-X,X-${maxCoord})),2)+pow(max(0,max(${radius}-Y,Y-${maxCoord})),2),${radiusSquared})`;
-  const camFilter = `[1:v]setpts=PTS-STARTPTS,crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2',scale=${actualPipSize}:${actualPipSize},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*${roundCornerExpr}*(${alphaExpr})'[cam]`;
+  const camFilter = `[1:v]setpts=PTS-STARTPTS,hflip,crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2',scale=${actualPipSize}:${actualPipSize},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*${roundCornerExpr}*(${alphaExpr})'[cam]`;
 
   const xExpr = buildPosExpr(scaledKeyframes, 'pipX');
   const yExpr = buildPosExpr(scaledKeyframes, 'pipY');

@@ -37,6 +37,10 @@ import {
   shouldRenderPreviewFrame,
   createCameraRecordingStream
 } from './features/recording/recorder-utils';
+import {
+  drawMirroredImage,
+  getCenteredSquareCropRect
+} from './features/camera/camera-render';
 import { cleanupAllMedia } from './features/media-cleanup';
 
 const projectHomeView = document.getElementById('projectHomeView');
@@ -1709,10 +1713,23 @@ function drawPip(targetCtx, video, pipX, pipY, pipW, pipH) {
   targetCtx.clip();
   const camW = video.videoWidth;
   const camH = video.videoHeight;
-  const cropSize = Math.min(camW, camH);
-  const sx = (camW - cropSize) / 2;
-  const sy = (camH - cropSize) / 2;
-  targetCtx.drawImage(video, sx, sy, cropSize, cropSize, pipX, pipY, pipW, pipH);
+  const crop = getCenteredSquareCropRect(camW, camH);
+  if (!crop) {
+    targetCtx.restore();
+    return;
+  }
+  drawMirroredImage(
+    targetCtx,
+    video,
+    crop.sourceX,
+    crop.sourceY,
+    crop.size,
+    crop.size,
+    pipX,
+    pipY,
+    pipW,
+    pipH
+  );
   targetCtx.restore();
 }
 
@@ -1742,7 +1759,7 @@ function drawCameraRect(targetCtx, video, x, y, w, h, r) {
   const dh = vh * scale;
   const dx = x + (w - dw) / 2;
   const dy = y + (h - dh) / 2;
-  targetCtx.drawImage(video, dx, dy, dw, dh);
+  drawMirroredImage(targetCtx, video, 0, 0, vw, vh, dx, dy, dw, dh);
   targetCtx.restore();
 }
 

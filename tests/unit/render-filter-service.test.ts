@@ -128,8 +128,45 @@ describe('main/services/render-filter-service', () => {
     expect(filter).toContain('[screen]');
     expect(filter).toContain('[cam]');
     expect(filter).toContain('overlay');
+    expect(filter).toContain('[1:v]setpts=PTS-STARTPTS,hflip,crop=');
     expect(filter).toContain("zoompan=z='if(gte(it,2.000),2.000");
     expect(filter).toContain(":x='max(0,min(iw-iw/zoom,iw*(if(gte(it,2.000),0.750000");
+  });
+
+  test('buildFilterComplex mirrors the shared camera source before fullscreen transitions', () => {
+    const filter = buildFilterComplex(
+      [
+        {
+          time: 0,
+          pipX: 100,
+          pipY: 100,
+          pipVisible: true,
+          cameraFullscreen: false,
+          backgroundZoom: 1,
+          backgroundPanX: 0,
+          backgroundPanY: 0
+        },
+        {
+          time: 2,
+          pipX: 120,
+          pipY: 120,
+          pipVisible: true,
+          cameraFullscreen: true,
+          backgroundZoom: 1,
+          backgroundPanX: 0,
+          backgroundPanY: 0
+        }
+      ] as Keyframe[],
+      320,
+      'fill',
+      1920,
+      1080,
+      1920,
+      1080
+    );
+
+    expect(filter).toContain('[1:v]setpts=PTS-STARTPTS,hflip,split[cam1][cam2]');
+    expect(filter).toContain('[with_pip][camfull]overlay=0:0:format=auto[out]');
   });
 
   test('buildFilterComplex scales screen into the editor canvas', () => {
