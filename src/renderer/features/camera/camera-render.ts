@@ -45,6 +45,16 @@ export function drawMirroredImage(
   targetCtx.save();
   targetCtx.translate(destX + destWidth, destY);
   targetCtx.scale(-1, 1);
-  targetCtx.drawImage(source, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, destWidth, destHeight);
+  targetCtx.drawImage(
+    source,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    destWidth,
+    destHeight
+  );
   targetCtx.restore();
 }

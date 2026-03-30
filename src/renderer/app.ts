@@ -37,10 +37,7 @@ import {
   shouldRenderPreviewFrame,
   createCameraRecordingStream
 } from './features/recording/recorder-utils';
-import {
-  drawMirroredImage,
-  getCenteredSquareCropRect
-} from './features/camera/camera-render';
+import { drawMirroredImage, getCenteredSquareCropRect } from './features/camera/camera-render';
 import { cleanupAllMedia } from './features/media-cleanup';
 
 const projectHomeView = document.getElementById('projectHomeView');
