@@ -12,6 +12,7 @@ export interface RenderProgressUpdate {
 
 export interface ProxyProgressUpdate {
   takeId: string;
+  kind: 'screen' | 'camera';
   status: 'started' | 'progress' | 'done' | 'error';
   percent?: number;
   proxyPath?: string;
@@ -20,7 +21,8 @@ export interface ProxyProgressUpdate {
 
 export interface GenerateProxyOpts {
   takeId: string;
-  screenPath: string;
+  sourcePath: string;
+  kind: 'screen' | 'camera';
   projectFolder: string;
   durationSec?: number;
 }

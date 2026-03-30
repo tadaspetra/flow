@@ -88,7 +88,8 @@ describe('main/ipc/register-handlers', () => {
       { sender },
       {
         takeId: 'take-1',
-        screenPath: '/project/screen.webm',
+        sourcePath: '/project/screen.webm',
+        kind: 'screen',
         projectFolder: '/project',
         durationSec: 10
       }
@@ -97,6 +98,7 @@ describe('main/ipc/register-handlers', () => {
     expect(result).toBe('/project/screen-proxy.mp4');
     expect(sender.send).toHaveBeenCalledWith('proxy:progress', {
       takeId: 'take-1',
+      kind: 'screen',
       status: 'started',
       percent: 0
     });
@@ -105,6 +107,7 @@ describe('main/ipc/register-handlers', () => {
     await vi.waitFor(() => {
       expect(sender.send).toHaveBeenCalledWith('proxy:progress', {
         takeId: 'take-1',
+        kind: 'screen',
         status: 'done',
         proxyPath: '/project/screen-proxy.mp4'
       });
@@ -118,12 +121,13 @@ describe('main/ipc/register-handlers', () => {
 
     handlers.get('proxy:generate')!(
       { sender },
-      { takeId: 'take-1', screenPath: '/project/screen.webm', projectFolder: '/project' }
+      { takeId: 'take-1', sourcePath: '/project/screen.webm', kind: 'screen', projectFolder: '/project' }
     );
 
     await vi.waitFor(() => {
       expect(sender.send).toHaveBeenCalledWith('proxy:progress', {
         takeId: 'take-1',
+        kind: 'screen',
         status: 'error',
         error: 'encode failed'
       });
@@ -137,7 +141,7 @@ describe('main/ipc/register-handlers', () => {
 
     handlers.get('proxy:generate')!(
       { sender },
-      { takeId: 'take-1', screenPath: '/project/screen.webm', projectFolder: '/project' }
+      { takeId: 'take-1', sourcePath: '/project/screen.webm', kind: 'screen', projectFolder: '/project' }
     );
 
     // Wait for the promise to settle
@@ -156,7 +160,7 @@ describe('main/ipc/register-handlers', () => {
 
     const result = handlers.get('proxy:generate')!(
       { sender },
-      { takeId: 'take-1', screenPath: '', projectFolder: '/project' }
+      { takeId: 'take-1', sourcePath: '', kind: 'screen', projectFolder: '/project' }
     );
 
     expect(result).toBeNull();

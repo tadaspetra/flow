@@ -31,7 +31,7 @@ describe('main/services/proxy-service', () => {
     };
 
     await generateProxy(
-      { screenPath: '/project/screen.webm', proxyPath: '/project/screen-proxy.mp4' },
+      { sourcePath: '/project/screen.webm', proxyPath: '/project/screen-proxy.mp4' },
       { runFfmpeg, fs: fsStub, ffmpegPath: '/usr/bin/ffmpeg' }
     );
 
@@ -60,7 +60,7 @@ describe('main/services/proxy-service', () => {
     };
 
     await generateProxy(
-      { screenPath: '/project/screen.webm', proxyPath: '/project/screen-proxy.mp4', onProgress },
+      { sourcePath: '/project/screen.webm', proxyPath: '/project/screen-proxy.mp4', onProgress },
       { runFfmpeg, fs: fsStub, ffmpegPath: '/usr/bin/ffmpeg' }
     );
 
@@ -77,7 +77,7 @@ describe('main/services/proxy-service', () => {
 
     await expect(
       generateProxy(
-        { screenPath: '/project/screen.webm', proxyPath: '/project/screen-proxy.mp4' },
+        { sourcePath: '/project/screen.webm', proxyPath: '/project/screen-proxy.mp4' },
         { runFfmpeg, fs: fsStub, ffmpegPath: '/usr/bin/ffmpeg' }
       )
     ).rejects.toThrow('ffmpeg failed');
@@ -95,12 +95,32 @@ describe('main/services/proxy-service', () => {
     };
 
     await generateProxy(
-      { screenPath: '/project/screen.webm', proxyPath: '/project/screen-proxy.mp4' },
+      { sourcePath: '/project/screen.webm', proxyPath: '/project/screen-proxy.mp4' },
       { runFfmpeg, fs: fsStub, ffmpegPath: '/usr/bin/ffmpeg' }
     );
 
     // First call to unlinkSync is the stale tmp cleanup
     expect(fsStub.unlinkSync).toHaveBeenCalledWith('/project/screen-proxy.mp4.tmp');
+  });
+
+  test('generateProxy can create a video-only camera proxy', async () => {
+    const runFfmpeg = vi.fn().mockResolvedValue({ stderr: '' });
+    const fsStub = {
+      existsSync: vi.fn().mockReturnValue(false),
+      unlinkSync: vi.fn(),
+      renameSync: vi.fn()
+    };
+
+    await generateProxy(
+      {
+        sourcePath: '/project/camera.webm',
+        proxyPath: '/project/camera-proxy.mp4',
+        includeAudio: false
+      },
+      { runFfmpeg, fs: fsStub, ffmpegPath: '/usr/bin/ffmpeg' }
+    );
+
+    expect(runFfmpeg.mock.calls[0][0].args).toContain('-an');
   });
 
   test('concurrency queue limits to 2 simultaneous jobs', async () => {
@@ -130,9 +150,9 @@ describe('main/services/proxy-service', () => {
     };
     const deps = { runFfmpeg, fs: fsStub, ffmpegPath: '/usr/bin/ffmpeg' };
 
-    const a = generateProxy({ screenPath: '/a.webm', proxyPath: '/a-proxy.mp4' }, deps);
-    const b = generateProxy({ screenPath: '/b.webm', proxyPath: '/b-proxy.mp4' }, deps);
-    const c = generateProxy({ screenPath: '/c.webm', proxyPath: '/c-proxy.mp4' }, deps);
+    const a = generateProxy({ sourcePath: '/a.webm', proxyPath: '/a-proxy.mp4' }, deps);
+    const b = generateProxy({ sourcePath: '/b.webm', proxyPath: '/b-proxy.mp4' }, deps);
+    const c = generateProxy({ sourcePath: '/c.webm', proxyPath: '/c-proxy.mp4' }, deps);
 
     // Allow microtasks to run
     await vi.waitFor(() => {

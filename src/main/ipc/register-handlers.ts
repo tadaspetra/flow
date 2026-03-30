@@ -203,16 +203,27 @@ export function registerIpcHandlers({
     'proxy:generate',
     (
       event: IpcMainInvokeEvent,
-      opts: { takeId: string; screenPath: string; projectFolder: string; durationSec?: number }
+      opts: {
+        takeId: string;
+        sourcePath: string;
+        kind: 'screen' | 'camera';
+        projectFolder: string;
+        durationSec?: number;
+      }
     ) => {
-      if (!proxyService || !opts.screenPath || !opts.projectFolder) return null;
-      const proxyPath = proxyService.deriveProxyPath(opts.screenPath);
+      if (!proxyService || !opts.sourcePath || !opts.projectFolder) return null;
+      const proxyPath = proxyService.deriveProxyPath(opts.sourcePath);
       const totalDuration =
         Number.isFinite(opts.durationSec) && (opts.durationSec as number) > 0
           ? (opts.durationSec as number)
           : 0;
 
-      event.sender.send('proxy:progress', { takeId: opts.takeId, status: 'started', percent: 0 });
+      event.sender.send('proxy:progress', {
+        takeId: opts.takeId,
+        kind: opts.kind,
+        status: 'started',
+        percent: 0
+      });
 
       const onProgress =
         totalDuration > 0
@@ -231,10 +242,20 @@ export function registerIpcHandlers({
           : undefined;
 
       proxyService
-        .generateProxy({ screenPath: opts.screenPath, proxyPath, onProgress })
+        .generateProxy({
+          sourcePath: opts.sourcePath,
+          proxyPath,
+          onProgress,
+          includeAudio: opts.kind !== 'camera'
+        })
         .then(() => {
           if (!event.sender.isDestroyed()) {
-            event.sender.send('proxy:progress', { takeId: opts.takeId, status: 'done', proxyPath });
+            event.sender.send('proxy:progress', {
+              takeId: opts.takeId,
+              kind: opts.kind,
+              status: 'done',
+              proxyPath
+            });
           }
         })
         .catch((err: unknown) => {
@@ -242,6 +263,7 @@ export function registerIpcHandlers({
             const message = err instanceof Error ? err.message : String(err);
             event.sender.send('proxy:progress', {
               takeId: opts.takeId,
+              kind: opts.kind,
               status: 'error',
               error: message
             });

@@ -36,6 +36,13 @@ describe('recorder-utils', () => {
     });
   });
 
+  test('keeps camera audio bitrate when camera recording includes mic audio', () => {
+    expect(getRecorderOptions({ suffix: 'camera', hasAudio: true }, undefined)).toEqual({
+      videoBitsPerSecond: 10000000,
+      audioBitsPerSecond: 192000
+    });
+  });
+
   test('keeps screen audio bitrate when screen recording includes audio', () => {
     expect(getRecorderOptions({ suffix: 'screen', hasAudio: true }, undefined)).toEqual({
       videoBitsPerSecond: 30000000,
@@ -63,11 +70,14 @@ describe('recorder-utils', () => {
     expect(shouldRenderPreviewFrame(90, 20, true)).toBe(false);
   });
 
-  test('creates a camera-only recording stream with video tracks only', () => {
+  test('creates a camera recording stream with camera video and mic audio tracks', () => {
     const videoTracks = [{ id: 'cam-video-1' }, { id: 'cam-video-2' }];
+    const audioTracks = [{ id: 'mic-audio-1' }];
     const cameraStream = {
-      getVideoTracks: () => videoTracks,
-      getAudioTracks: () => [{ id: 'cam-audio' }]
+      getVideoTracks: () => videoTracks
+    };
+    const audioStream = {
+      getAudioTracks: () => audioTracks
     };
 
     class FakeMediaStream {
@@ -79,11 +89,12 @@ describe('recorder-utils', () => {
 
     const recordingStream = createCameraRecordingStream(
       cameraStream as unknown as MediaStream,
+      audioStream as unknown as MediaStream,
       FakeMediaStream as unknown as typeof MediaStream
     );
     expect(recordingStream).toBeInstanceOf(FakeMediaStream);
     expect((recordingStream as unknown as InstanceType<typeof FakeMediaStream>).tracks).toEqual(
-      videoTracks
+      [...videoTracks, ...audioTracks]
     );
   });
 

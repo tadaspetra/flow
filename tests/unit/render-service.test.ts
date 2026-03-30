@@ -267,6 +267,87 @@ describe('main/services/render-service', () => {
     expect(argString).not.toContain('[audio_final]');
   });
 
+  test('renderComposite trims audio from the camera input when face cam is visible', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-camera-audio-visible-'));
+    const outputDir = path.join(tmpDir, 'out');
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    const cameraPath = path.join(tmpDir, 'camera.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+    fs.writeFileSync(cameraPath, 'camera', 'utf8');
+
+    const execCalls: { bin: string; args: string[] }[] = [];
+    await renderComposite(
+      {
+        outputFolder: outputDir,
+        takes: [{ id: 'take-1', screenPath, cameraPath }],
+        sections: [{ takeId: 'take-1', sourceStart: 0, sourceEnd: 1.0 }],
+        keyframes: [
+          { time: 0, pipX: 10, pipY: 10, pipVisible: true, cameraFullscreen: false }
+        ] as Keyframe[],
+        pipSize: 300,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        screenFitMode: 'fill',
+        exportAudioPreset: 'off'
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 622,
+        probeVideoFpsWithFfmpeg: async () => 30,
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
+          execCalls.push({ bin: ffmpegPath, args });
+        })
+      }
+    );
+
+    const argString = execCalls[0].args.join(' ');
+    expect(argString).toContain('[1:a]atrim=start=0.000:end=1.000,asetpts=PTS-STARTPTS[sa0]');
+    expect(argString).toContain('[1:v]trim=');
+    expect(argString).toContain('[screen_raw][audio_out]');
+  });
+
+  test('renderComposite keeps camera mic audio even when face cam video is hidden', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-camera-audio-hidden-'));
+    const outputDir = path.join(tmpDir, 'out');
+    const screenPath = path.join(tmpDir, 'screen.webm');
+    const cameraPath = path.join(tmpDir, 'camera.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+    fs.writeFileSync(cameraPath, 'camera', 'utf8');
+
+    const execCalls: { bin: string; args: string[] }[] = [];
+    await renderComposite(
+      {
+        outputFolder: outputDir,
+        takes: [{ id: 'take-1', screenPath, cameraPath }],
+        sections: [{ takeId: 'take-1', sourceStart: 0, sourceEnd: 1.0 }],
+        keyframes: [
+          { time: 0, pipX: 10, pipY: 10, pipVisible: false, cameraFullscreen: false }
+        ] as Keyframe[],
+        pipSize: 300,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        screenFitMode: 'fill',
+        exportAudioPreset: 'off'
+      },
+      {
+        ffmpegPath: '/usr/bin/ffmpeg',
+        now: () => 623,
+        probeVideoFpsWithFfmpeg: async () => 60,
+        runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
+          execCalls.push({ bin: ffmpegPath, args });
+        })
+      }
+    );
+
+    const args = execCalls[0].args;
+    const argString = args.join(' ');
+    expect(args.filter((value) => value === cameraPath)).toHaveLength(1);
+    expect(argString).toContain('[1:a]atrim=start=0.000:end=1.000,asetpts=PTS-STARTPTS[sa0]');
+    expect(argString).not.toContain('[camera_raw]');
+    expect(argString).not.toContain('[1:v]trim=');
+    expect(argString).toContain('[screen_raw][audio_out]');
+  });
+
   test('renderComposite applies compressor filter when export audio preset is compressed', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-render-audio-compressed-'));
     const outputDir = path.join(tmpDir, 'out');

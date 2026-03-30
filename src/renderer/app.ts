@@ -29,6 +29,7 @@ import {
   normalizeCameraSyncOffsetMs,
   resolveCameraPlaybackTargetTime
 } from './features/timeline/camera-sync';
+import { getTakePlaybackSources } from './features/timeline/take-playback-sources';
 import {
   finalizeRecordingChunks,
   getRecorderFinalizeTimeoutMs,
@@ -232,7 +233,7 @@ if (typeof window.electronAPI.onRenderProgress === 'function') {
 
 if (typeof window.electronAPI.onProxyProgress === 'function') {
   window.electronAPI.onProxyProgress((payload) => {
-    if (!payload || !payload.takeId) return;
+    if (!payload || !payload.takeId || !payload.kind) return;
     if (payload.status === 'progress') {
       const current = proxyStatus.get(payload.takeId);
       if (current && current.status === 'pending') {
@@ -243,30 +244,34 @@ if (typeof window.electronAPI.onProxyProgress === 'function') {
       proxyStatus.set(payload.takeId, { status: 'done', percent: 1 });
       const take = activeProject?.takes?.find((t) => t.id === payload.takeId);
       if (take) {
-        take.proxyPath = payload.proxyPath;
+        if (payload.kind === 'camera') take.cameraProxyPath = payload.proxyPath;
+        else take.proxyPath = payload.proxyPath;
         persistProjectNow().catch((err) =>
           console.warn('[Proxy] Failed to persist proxyPath:', err)
         );
       }
-      // Hot-swap the cached video element to use the proxy
+      // Hot-swap the cached playback element to use the proxy
       const cached = takeVideoPool.get(payload.takeId);
       if (cached) {
-        const wasPlaying = !cached.screen.paused;
-        const currentTime = cached.screen.currentTime;
-        const rate = cached.screen.playbackRate;
-        cached.screen.src = pathToFileUrl(payload.proxyPath);
-        cached.screen.addEventListener(
+        const media = payload.kind === 'camera' ? cached.camera : cached.screen;
+        if (media) {
+          const wasPlaying = !media.paused;
+          const currentTime = media.currentTime;
+          const rate = media.playbackRate;
+          media.src = pathToFileUrl(payload.proxyPath);
+          media.addEventListener(
           'loadedmetadata',
           () => {
-            cached.screen.currentTime = currentTime;
+            media.currentTime = currentTime;
             if (wasPlaying) {
-              cached.screen.playbackRate = rate;
-              cached.screen.play().catch(() => {});
+              media.playbackRate = rate;
+              media.play().catch(() => {});
               if (!hasPendingEditorDraw()) scheduleEditorDrawLoop();
             }
           },
           { once: true }
-        );
+          );
+        }
       }
       renderSectionMarkers();
     } else if (payload.status === 'error') {
@@ -404,7 +409,7 @@ let draggingBackground = false;
 let backgroundDragMoved = false;
 let backgroundDragState = null;
 let takeAudioBufferCache = new Map(); // takeId -> AudioBuffer
-let takeVideoPool = new Map(); // takeId -> { screen: HTMLVideoElement, camera: HTMLVideoElement|null }
+let takeVideoPool = new Map(); // takeId -> { screen, camera, audio }
 const proxyStatus = new Map(); // takeId -> { status: 'pending'|'done'|'error', percent: number }
 let activeTakeId = null;
 let activePlaybackSection = null;
@@ -445,19 +450,27 @@ function getOrCreateTakeVideos(takeId) {
   if (takeVideoPool.has(takeId)) return takeVideoPool.get(takeId);
   const take = activeProject?.takes?.find((t) => t.id === takeId);
   if (!take) return null;
+  const playbackSources = getTakePlaybackSources(take);
   const screen = document.createElement('video');
   screen.playsInline = true;
+  screen.muted = !!playbackSources.audioPath;
   screen.preload = 'auto';
-  screen.src = pathToFileUrl(take.proxyPath || take.screenPath);
+  screen.src = pathToFileUrl(playbackSources.screenVideoPath);
   let camera = null;
-  if (take.cameraPath) {
+  if (playbackSources.cameraVideoPath) {
     camera = document.createElement('video');
     camera.playsInline = true;
     camera.muted = true;
     camera.preload = 'auto';
-    camera.src = pathToFileUrl(take.cameraPath);
+    camera.src = pathToFileUrl(playbackSources.cameraVideoPath);
   }
-  const entry = { screen, camera };
+  let audio = null;
+  if (playbackSources.audioPath) {
+    audio = document.createElement('audio');
+    audio.preload = 'auto';
+    audio.src = pathToFileUrl(playbackSources.audioPath);
+  }
+  const entry = { screen, camera, audio };
   takeVideoPool.set(takeId, entry);
   return entry;
 }
@@ -469,6 +482,10 @@ function cleanupVideoPool() {
     if (videos.camera) {
       videos.camera.pause();
       videos.camera.src = '';
+    }
+    if (videos.audio) {
+      videos.audio.pause();
+      videos.audio.src = '';
     }
   }
   takeVideoPool.clear();
@@ -1004,7 +1021,21 @@ async function activateProject(projectPath, project, preferredView = 'recording'
         window.electronAPI
           .generateProxy({
             takeId: take.id,
-            screenPath: take.screenPath,
+            sourcePath: take.screenPath,
+            kind: 'screen',
+            projectFolder: projectPath,
+            durationSec: take.duration || 0
+          })
+          .catch((err) => console.warn('[Proxy] Failed to start proxy generation:', err));
+      }
+      if (!take.cameraProxyPath && take.cameraPath) {
+        proxyStatus.set(take.id, { status: 'pending', percent: 0 });
+        needsMarkerUpdate = true;
+        window.electronAPI
+          .generateProxy({
+            takeId: take.id,
+            sourcePath: take.cameraPath,
+            kind: 'camera',
             projectFolder: projectPath,
             durationSec: take.duration || 0
           })
@@ -1338,8 +1369,10 @@ async function extractWaveformPeaks(numBuckets = 800) {
       if (!section.takeId || takeAudioBufferCache.has(section.takeId)) continue;
       const take = activeProject?.takes?.find((t) => t.id === section.takeId);
       if (!take) continue;
+      const playbackSources = getTakePlaybackSources(take);
+      if (!playbackSources.audioPath) continue;
       try {
-        const url = pathToFileUrl(take.screenPath);
+        const url = pathToFileUrl(playbackSources.audioPath);
         const response = await fetch(url);
         const arrayBuffer = await response.arrayBuffer();
         const offlineCtx = new OfflineAudioContext(1, 1, 44100);
@@ -2119,12 +2152,6 @@ function createRecorder(stream, suffix) {
   return recorder;
 }
 
-function addAudioToStream(stream) {
-  if (!audioStream) return stream;
-  const combined = new MediaStream([...stream.getVideoTracks(), ...audioStream.getAudioTracks()]);
-  return combined;
-}
-
 function mergeInt16Arrays(arrays) {
   let totalLength = 0;
   for (const arr of arrays) totalLength += arr.length;
@@ -2174,7 +2201,7 @@ async function startRecording() {
   scribeLastFailureReason = null;
   scribeManualClose = false;
 
-  // Individual screen (with audio)
+  // Individual screen (video only)
   // Route through a canvas at constant 30fps to prevent keyframe flicker
   // from variable frame rate desktop capture input
   if (screenStream) {
@@ -2188,13 +2215,12 @@ async function startRecording() {
     screenRecInterval = setInterval(() => {
       recCtx.drawImage(screenVideo, 0, 0, recCanvas.width, recCanvas.height);
     }, 1000 / 30);
-    const screenOnly = addAudioToStream(recCanvas.captureStream(30));
-    recorders.push(createRecorder(screenOnly, 'screen'));
+    recorders.push(createRecorder(recCanvas.captureStream(30), 'screen'));
   }
 
-  // Individual camera (video only; export uses screen audio)
+  // Individual camera with mic audio for PiP/editor/export playback
   if (cameraStream) {
-    const cameraOnly = createCameraRecordingStream(cameraStream);
+    const cameraOnly = createCameraRecordingStream(cameraStream, audioStream);
     if (cameraOnly) {
       const [cameraTrack] = cameraOnly.getVideoTracks();
       console.log(
@@ -2471,6 +2497,8 @@ async function recoverPendingTake(recoveryTake) {
         duration: recoveryTake.recordedDuration,
         screenPath,
         cameraPath,
+        proxyPath: null,
+        cameraProxyPath: null,
         sections: recoverySections
       });
     }
@@ -2493,6 +2521,32 @@ async function recoverPendingTake(recoveryTake) {
         take.sections = appendResult.takeSections;
       }
       await persistProjectNow();
+      if (projectSession.projectPath && screenPath) {
+        proxyStatus.set(takeId, { status: 'pending', percent: 0 });
+        renderSectionMarkers();
+        window.electronAPI
+          .generateProxy({
+            takeId,
+            sourcePath: screenPath,
+            kind: 'screen',
+            projectFolder: projectSession.projectPath,
+            durationSec: recoveryTake.recordedDuration
+          })
+          .catch((err) => console.warn('[Proxy] Failed to start proxy generation:', err));
+      }
+      if (projectSession.projectPath && cameraPath) {
+        proxyStatus.set(takeId, { status: 'pending', percent: 0 });
+        renderSectionMarkers();
+        window.electronAPI
+          .generateProxy({
+            takeId,
+            sourcePath: cameraPath,
+            kind: 'camera',
+            projectFolder: projectSession.projectPath,
+            durationSec: recoveryTake.recordedDuration
+          })
+          .catch((err) => console.warn('[Proxy] Failed to start proxy generation:', err));
+      }
     }
 
     await completeRecoveryTake(projectSession.projectPath);
@@ -2945,6 +2999,7 @@ async function stopRecording() {
         screenPath,
         cameraPath,
         proxyPath: null,
+        cameraProxyPath: null,
         sections: sectionsForTimeline
       });
     }
@@ -2974,7 +3029,21 @@ async function stopRecording() {
           window.electronAPI
             .generateProxy({
               takeId,
-              screenPath,
+              sourcePath: screenPath,
+              kind: 'screen',
+              projectFolder: activeProjectPath,
+              durationSec: recordedDuration
+            })
+            .catch((err) => console.warn('[Proxy] Failed to start proxy generation:', err));
+        }
+        if (activeProjectPath && cameraPath) {
+          proxyStatus.set(takeId, { status: 'pending', percent: 0 });
+          renderSectionMarkers();
+          window.electronAPI
+            .generateProxy({
+              takeId,
+              sourcePath: cameraPath,
+              kind: 'camera',
               projectFolder: activeProjectPath,
               durationSec: recordedDuration
             })
@@ -3092,6 +3161,12 @@ function enterEditor(rawSections, opts = {}) {
       videos.screen.currentTime = firstSection.sourceStart;
       if (videos.camera) {
         videos.camera.currentTime = resolveCameraPlaybackTargetTime(
+          firstSection.sourceStart,
+          editorState.cameraSyncOffsetMs
+        );
+      }
+      if (videos.audio) {
+        videos.audio.currentTime = resolveCameraPlaybackTargetTime(
           firstSection.sourceStart,
           editorState.cameraSyncOffsetMs
         );
@@ -3303,12 +3378,17 @@ function switchPlaybackSection(nextSection, opts = {}) {
         previousVideos.camera.pause();
         previousVideos.camera.playbackRate = 1;
       }
+      if (previousVideos.audio) {
+        previousVideos.audio.pause();
+        previousVideos.audio.playbackRate = 1;
+      }
     }
   }
 
   if (seekPlan.screenNeedsSeek) nextVideos.screen.currentTime = seekPlan.targetSourceTime;
   if (nextVideos.camera && seekPlan.cameraNeedsSeek)
     nextVideos.camera.currentTime = seekPlan.targetCameraTime;
+  if (nextVideos.audio && seekPlan.cameraNeedsSeek) nextVideos.audio.currentTime = seekPlan.targetCameraTime;
 
   activeTakeId = nextSection.takeId;
   activePlaybackSection = nextSection;
@@ -3331,6 +3411,10 @@ function switchPlaybackSection(nextSection, opts = {}) {
       nextVideos.camera.playbackRate = speed;
       nextVideos.camera.play().catch(() => {});
     }
+    if (nextVideos.audio && nextVideos.audio.paused) {
+      nextVideos.audio.playbackRate = speed;
+      nextVideos.audio.play().catch(() => {});
+    }
   }
 
   return true;
@@ -3349,10 +3433,11 @@ function syncCameraPlayback(videos) {
   const now = performance.now();
 
   if (absDrift >= CAMERA_DRIFT_HARD_THRESHOLD && now >= cameraResyncCooldownUntil) {
-    videos.camera.currentTime = resolveCameraPlaybackTargetTime(
+    const targetTime = resolveCameraPlaybackTargetTime(
       videos.screen.currentTime,
       editorState.cameraSyncOffsetMs
     );
+    videos.camera.currentTime = targetTime;
     videos.camera.playbackRate = baseRate;
     cameraResyncCooldownUntil = now + CAMERA_RESYNC_COOLDOWN_MS;
     console.debug('[Editor] Camera hard resync', {
@@ -3397,6 +3482,10 @@ function editorPlay() {
         videos.camera.playbackRate = speed;
         videos.camera.play().catch(() => {});
       }
+      if (videos.audio) {
+        videos.audio.playbackRate = speed;
+        videos.audio.play().catch(() => {});
+      }
     }
   }
   editorPlayBtn.textContent = 'Pause';
@@ -3411,6 +3500,10 @@ function editorPause() {
     if (videos.camera) {
       videos.camera.pause();
       videos.camera.playbackRate = 1;
+    }
+    if (videos.audio) {
+      videos.audio.pause();
+      videos.audio.playbackRate = 1;
     }
   }
   editorPlayBtn.textContent = 'Play';
@@ -3433,6 +3526,9 @@ function cyclePlaybackSpeed() {
       videos.screen.playbackRate = editorState.playbackSpeed;
       if (editorState.hasCamera && videos.camera) {
         videos.camera.playbackRate = editorState.playbackSpeed;
+      }
+      if (videos.audio) {
+        videos.audio.playbackRate = editorState.playbackSpeed;
       }
     }
   }

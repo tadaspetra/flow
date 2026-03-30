@@ -38,9 +38,10 @@ export function deriveProxyPath(screenPath: string): string {
 }
 
 export interface GenerateProxyOpts {
-  screenPath: string;
+  sourcePath: string;
   proxyPath: string;
   onProgress?: (progress: FfmpegProgress) => void;
+  includeAudio?: boolean;
 }
 
 export interface GenerateProxyDeps {
@@ -73,7 +74,7 @@ export function generateProxy(
       'pipe:1',
       '-nostats',
       '-i',
-      opts.screenPath,
+      opts.sourcePath,
       '-vf',
       'scale=960:540',
       '-c:v',
@@ -86,10 +87,7 @@ export function generateProxy(
       '2',
       '-g',
       '15',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '64k',
+      ...(opts.includeAudio === false ? ['-an'] : ['-c:a', 'aac', '-b:a', '64k']),
       '-movflags',
       '+faststart',
       '-f',

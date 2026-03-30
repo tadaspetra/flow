@@ -229,12 +229,16 @@ export function buildCameraTrimFilter(
 function buildInputPlan(
   sections: RenderSectionInput[],
   takeMap: Map<string, { screenPath: string | null; cameraPath: string | null }>,
-  hasCamera: boolean
+  {
+    includeCameraVideo,
+    includeCameraAudio
+  }: { includeCameraVideo: boolean; includeCameraAudio: boolean }
 ) {
   const fpsProbePaths = new Set<string>();
-  const sectionInputs: Array<{ screenIdx: number; cameraIdx: number; imageIdx: number }> = [];
+  const sectionInputs: Array<{ screenIdx: number; cameraIdx: number; audioIdx: number; imageIdx: number }> =
+    [];
   const args = ['-progress', 'pipe:1', '-nostats'];
-  const takeInputs = new Map<string, { screenIdx: number; cameraIdx: number }>();
+  const takeInputs = new Map<string, { screenIdx: number; cameraIdx: number; audioIdx: number }>();
   let inputIndex = 0;
 
   for (const section of sections) {
@@ -253,15 +257,21 @@ function buildInputPlan(
       inputIndex += 1;
 
       let cameraIdx = -1;
-      if (hasCamera && take.cameraPath) {
+      let audioIdx = -1;
+      if ((includeCameraVideo || includeCameraAudio) && take.cameraPath) {
         assertFilePath(take.cameraPath, 'Camera');
         args.push('-i', take.cameraPath);
-        fpsProbePaths.add(take.cameraPath);
-        cameraIdx = inputIndex;
+        if (includeCameraVideo) {
+          fpsProbePaths.add(take.cameraPath);
+          cameraIdx = inputIndex;
+        }
+        if (includeCameraAudio) {
+          audioIdx = inputIndex;
+        }
         inputIndex += 1;
       }
 
-      inputPlan = { screenIdx, cameraIdx };
+      inputPlan = { screenIdx, cameraIdx, audioIdx };
       takeInputs.set(takeId, inputPlan);
     }
 
@@ -408,8 +418,15 @@ export async function renderComposite(
     });
   }
 
-  const hasCamera = keyframes.some((keyframe) => keyframe.pipVisible || keyframe.cameraFullscreen);
-  const { args, fpsProbePaths, sectionInputs } = buildInputPlan(sections, takeMap, hasCamera);
+  const hasCameraVideo = keyframes.some((keyframe) => keyframe.pipVisible || keyframe.cameraFullscreen);
+  const hasCameraAudio = sections.some((section) => {
+    if (!section.takeId) return false;
+    return Boolean(takeMap.get(section.takeId)?.cameraPath);
+  });
+  const { args, fpsProbePaths, sectionInputs } = buildInputPlan(sections, takeMap, {
+    includeCameraVideo: hasCameraVideo,
+    includeCameraAudio: hasCameraAudio
+  });
   const totalDurationSec = getTotalDurationSec(sections);
 
   const fpsProbeResults = await Promise.all(
@@ -421,7 +438,7 @@ export async function renderComposite(
 
   const targetFps = chooseRenderFps(
     fpsProbeResults.map((result) => result.fps),
-    hasCamera
+    hasCameraVideo
   );
 
   console.log(
@@ -438,9 +455,10 @@ export async function renderComposite(
   const filterParts: string[] = [];
   for (let index = 0; index < sections.length; index += 1) {
     const section = sections[index];
-    const { screenIdx, imageIdx } = sectionInputs[index];
+    const { screenIdx, audioIdx, imageIdx } = sectionInputs[index];
     const start = section.sourceStart.toFixed(3);
     const end = section.sourceEnd.toFixed(3);
+    const duration = (section.sourceEnd - section.sourceStart).toFixed(3);
 
     if (imageIdx >= 0) {
       const imageScale =
@@ -460,9 +478,13 @@ export async function renderComposite(
         `[${screenIdx}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,setsar=1[sv${index}]`
       );
     }
-    filterParts.push(
-      `[${screenIdx}:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[sa${index}]`
-    );
+    if (audioIdx >= 0) {
+      filterParts.push(`[${audioIdx}:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[sa${index}]`);
+    } else {
+      filterParts.push(
+        `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${duration},asetpts=PTS-STARTPTS[sa${index}]`
+      );
+    }
   }
 
   const screenLabels = sections.map((_, index) => `[sv${index}][sa${index}]`).join('');
@@ -474,7 +496,7 @@ export async function renderComposite(
     );
   }
 
-  if (hasCamera) {
+  if (hasCameraVideo) {
     for (let index = 0; index < sections.length; index += 1) {
       const section = sections[index];
       const { cameraIdx } = sectionInputs[index];

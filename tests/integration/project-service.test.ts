@@ -77,6 +77,8 @@ describe('main/services/project-service integration', () => {
             duration: 2.5,
             screenPath,
             cameraPath,
+            proxyPath: null,
+            cameraProxyPath: null,
             sections: [{ start: 0, end: 2.5, sourceStart: 0, sourceEnd: 2.5 }]
           }
         ],
@@ -128,12 +130,16 @@ describe('main/services/project-service integration', () => {
     expect(opened.project.settings.cameraSyncOffsetMs).toBe(145);
   });
 
-  test('proxyPath round-trips through save and open as relative path', () => {
+  test('proxy paths round-trip through save and open as relative paths', () => {
     const created = service.createProject({ name: 'Proxy', parentFolder: sandbox.root });
     const screenPath = path.join(created.projectPath, 'screen.webm');
+    const cameraPath = path.join(created.projectPath, 'camera.webm');
     const proxyPath = path.join(created.projectPath, 'screen-proxy.mp4');
+    const cameraProxyPath = path.join(created.projectPath, 'camera-proxy.mp4');
     fs.writeFileSync(screenPath, 'screen', 'utf8');
+    fs.writeFileSync(cameraPath, 'camera', 'utf8');
     fs.writeFileSync(proxyPath, 'proxy', 'utf8');
+    fs.writeFileSync(cameraProxyPath, 'camera-proxy', 'utf8');
 
     service.saveProject({
       projectPath: created.projectPath,
@@ -145,8 +151,9 @@ describe('main/services/project-service integration', () => {
             createdAt: new Date().toISOString(),
             duration: 5,
             screenPath,
-            cameraPath: null,
+            cameraPath,
             proxyPath,
+            cameraProxyPath,
             sections: []
           }
         ]
@@ -156,10 +163,12 @@ describe('main/services/project-service integration', () => {
     // Verify on-disk format uses relative path
     const raw = JSON.parse(fs.readFileSync(path.join(created.projectPath, 'project.json'), 'utf8'));
     expect(raw.takes[0].proxyPath).toBe('screen-proxy.mp4');
+    expect(raw.takes[0].cameraProxyPath).toBe('camera-proxy.mp4');
 
     // Verify open resolves back to absolute
     const opened = service.openProject(created.projectPath);
     expect(opened.project.takes[0].proxyPath).toBe(proxyPath);
+    expect(opened.project.takes[0].cameraProxyPath).toBe(cameraProxyPath);
   });
 
   test('proxyPath defaults to null for legacy takes without proxy', () => {
@@ -179,6 +188,7 @@ describe('main/services/project-service integration', () => {
             screenPath,
             cameraPath: null,
             proxyPath: null,
+            cameraProxyPath: null,
             sections: []
           }
         ]
@@ -187,6 +197,7 @@ describe('main/services/project-service integration', () => {
 
     const opened = service.openProject(created.projectPath);
     expect(opened.project.takes[0].proxyPath).toBeNull();
+    expect(opened.project.takes[0].cameraProxyPath).toBeNull();
   });
 
   test('recovery take lifecycle persists and clears payload', () => {

@@ -68,7 +68,8 @@ Acceptance criteria:
 
 ### B3. Recording
 
-- Recording captures screen (always) and optional camera streams, both with selected audio input.
+- Recording captures screen (always) and optional camera streams.
+- When camera capture is enabled, the selected mic audio is stored with the camera recording so PiP/editor/export audio follows the face-cam asset.
 
 Acceptance criteria:
 

@@ -73,6 +73,7 @@ export function shouldRenderPreviewFrame(
 
 export function createCameraRecordingStream(
   cameraStream: MediaStream | null | undefined,
+  audioStream: MediaStream | null | undefined = null,
   MediaStreamCtor: MediaStreamCtorLike = globalThis.MediaStream
 ): MediaStream | null {
   if (!cameraStream || typeof cameraStream.getVideoTracks !== 'function') {
@@ -81,7 +82,9 @@ export function createCameraRecordingStream(
 
   const videoTracks = cameraStream.getVideoTracks();
   if (!videoTracks.length) return null;
-  return new MediaStreamCtor(videoTracks);
+  const audioTracks =
+    audioStream && typeof audioStream.getAudioTracks === 'function' ? audioStream.getAudioTracks() : [];
+  return new MediaStreamCtor([...videoTracks, ...audioTracks]);
 }
 
 export async function finalizeRecordingChunks({
