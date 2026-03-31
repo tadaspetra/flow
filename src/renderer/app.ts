@@ -108,6 +108,8 @@ const editorTimelineWrapper = document.getElementById('editorTimelineWrapper');
 const editorTimeline = document.getElementById('editorTimeline');
 const editorSectionMarkers = document.getElementById('editorSectionMarkers');
 const editorScrubber = document.getElementById('editorScrubber');
+const editorScrubHandle = document.getElementById('editorScrubHandle');
+const editorScrubRuler = document.getElementById('editorScrubRuler');
 const editorCameraTrack = document.getElementById('editorCameraTrack');
 const editorCameraMarkers = document.getElementById('editorCameraMarkers');
 const cameraTrackLabel = document.getElementById('cameraTrackLabel');
@@ -3461,6 +3463,7 @@ function updateScrubberPosition() {
   if (!editorState || editorState.duration <= 0) return;
   const pct = (editorState.currentTime / editorState.duration) * 100;
   editorScrubber.style.left = pct + '%';
+  editorScrubHandle.style.left = pct + '%';
   if (editorState.playing) scrollTimelineToPlayhead();
 }
 
@@ -3816,6 +3819,20 @@ editorTimeline.addEventListener('mousedown', (e) => {
   }
 
   // Background click: seek
+  seekFromTimeline(e);
+  const onMove = (e2) => seekFromTimeline(e2);
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+});
+
+// Ruler drag-to-seek (always seeks, no section interactions)
+editorScrubRuler.addEventListener('mousedown', (e) => {
+  if (!editorState || editorState.rendering) return;
+  e.stopPropagation();
   seekFromTimeline(e);
   const onMove = (e2) => seekFromTimeline(e2);
   const onUp = () => {
