@@ -346,7 +346,10 @@
           <!-- Track labels (fixed) -->
           <div class="shrink-0 bg-neutral-950 border-r border-neutral-800/60 select-none">
             <div
-              class="h-8 flex items-center px-2.5 text-[10px] font-medium text-neutral-500 uppercase tracking-wider"
+              class="h-5 flex items-center px-2.5 text-[10px] font-medium text-neutral-400 uppercase tracking-wider"
+            ></div>
+            <div
+              class="h-8 flex items-center px-2.5 text-[10px] font-medium text-neutral-500 uppercase tracking-wider border-t border-neutral-800/40"
             >
               Screen
             </div>
@@ -369,8 +372,28 @@
               class="relative cursor-pointer select-none"
               style="min-width: 100%"
             >
+              <!-- Scrub ruler -->
+              <div
+                id="editorScrubRuler"
+                class="relative h-5 bg-neutral-950/80 cursor-pointer select-none"
+              >
+                <div
+                  id="editorScrubHandle"
+                  class="absolute top-0 bottom-0 z-30 pointer-events-none"
+                  style="left: 0%"
+                >
+                  <div
+                    class="absolute left-1/2 -translate-x-1/2 top-0"
+                    style="width: 12px; height: 16px"
+                  >
+                    <svg width="12" height="16" viewBox="0 0 12 16" fill="none">
+                      <path d="M0 0h12v10l-6 6-6-6V0z" fill="white" />
+                    </svg>
+                  </div>
+                </div>
+              </div>
               <!-- Screen track -->
-              <div id="editorScreenTrack" class="relative h-8 bg-neutral-900 overflow-hidden">
+              <div id="editorScreenTrack" class="relative h-8 bg-neutral-900 overflow-hidden border-t border-neutral-800/40">
                 <div id="editorSectionMarkers" class="absolute inset-0 z-[1]"></div>
               </div>
               <!-- Camera track -->
@@ -390,11 +413,11 @@
                   style="opacity: 0.5"
                 ></canvas>
               </div>
-              <!-- Scrubber (spans all tracks) -->
+              <!-- Scrubber line (spans clip tracks below ruler) -->
               <div
                 id="editorScrubber"
-                class="absolute top-0 bottom-0 w-0.5 bg-white pointer-events-none z-20"
-                style="left: 0%"
+                class="absolute bottom-0 w-0.5 bg-white pointer-events-none z-20"
+                style="left: 0%; top: 20px"
               ></div>
             </div>
           </div>
