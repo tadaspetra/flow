@@ -190,6 +190,41 @@ export function buildCamFullAlphaExpr(keyframes: Keyframe[]): string {
   return expr;
 }
 
+export function buildFullscreenProgressExpr(
+  keyframes: Keyframe[],
+  timeVar = 'T'
+): string {
+  const isFull = (kf: Keyframe) => (kf.cameraFullscreen || false);
+
+  const relevantKeyframes = collapseConsecutiveKeyframes(
+    keyframes,
+    (prev, curr) => isFull(prev) === isFull(curr)
+  );
+  if (relevantKeyframes.length === 1) return isFull(relevantKeyframes[0]) ? '1' : '0';
+
+  let expr = isFull(relevantKeyframes[0]) ? '1' : '0';
+  for (let index = 1; index < relevantKeyframes.length; index += 1) {
+    const prev = relevantKeyframes[index - 1];
+    const curr = relevantKeyframes[index];
+    const time = curr.time;
+    const prevFull = isFull(prev);
+    const currFull = isFull(curr);
+
+    if (prevFull !== currFull) {
+      const start = time - TRANSITION_DURATION;
+      const eased = easeExpr(timeVar, start);
+      if (currFull) {
+        expr = `if(gte(${timeVar},${time.toFixed(3)}),1,if(gte(${timeVar},${start.toFixed(3)}),${eased},${expr}))`;
+      } else {
+        expr = `if(gte(${timeVar},${time.toFixed(3)}),0,if(gte(${timeVar},${start.toFixed(3)}),1-${eased},${expr}))`;
+      }
+    } else {
+      expr = `if(gte(${timeVar},${time.toFixed(3)}),${currFull ? '1' : '0'},${expr})`;
+    }
+  }
+  return expr;
+}
+
 export function buildScreenFilter(
   keyframes: Keyframe[],
   screenFitMode: ScreenFitMode,
@@ -283,17 +318,31 @@ export function buildFilterComplex(
   const hasCamFull = keyframes.some((keyframe) => keyframe.cameraFullscreen);
 
   if (hasPip && hasCamFull) {
+    // Single camera stream with dynamic size/position for expand/shrink
+    // animation between pip and fullscreen (fade is only for visibility).
     const alphaExpr = buildAlphaExpr(keyframes);
-    const roundCornerExpr = `lte(pow(max(0,max(${radius}-X,X-${maxCoord})),2)+pow(max(0,max(${radius}-Y,Y-${maxCoord})),2),${radiusSquared})`;
-    const camPipFilter = `[cam1]setpts=PTS-STARTPTS,crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2',scale=${actualPipSize}:${actualPipSize},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*${roundCornerExpr}*(${alphaExpr})'[cam]`;
+    const progT = buildFullscreenProgressExpr(keyframes, 'T');
+    const progLower = buildFullscreenProgressExpr(keyframes, 't');
 
-    const camFullAlpha = buildCamFullAlphaExpr(keyframes);
-    const camFullFilter = `[cam2]setpts=PTS-STARTPTS,scale=${outW}:${outH}:flags=lanczos:force_original_aspect_ratio=increase,crop=${outW}:${outH},format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*(${camFullAlpha})'[camfull]`;
+    // Camera covers canvas via square crop scaled to max dimension
+    const maxDim = Math.max(outW, outH);
+    const sizeExpr = `${actualPipSize}+(${maxDim}-${actualPipSize})*(${progLower})`;
 
-    const xExpr = buildPosExpr(scaledKeyframes, 'pipX');
-    const yExpr = buildPosExpr(scaledKeyframes, 'pipY');
+    // Dynamic corner radius: full radius at pip, 0 at fullscreen
+    const rExpr = `${radius}*(1-(${progT}))`;
+    const cornerExpr = `lte(pow(max(0,max(${rExpr}-X,X-(W-1-${rExpr}))),2)+pow(max(0,max(${rExpr}-Y,Y-(H-1-${rExpr}))),2),pow(${rExpr},2)+0.5)`;
 
-    return `${screenFilter};[1:v]setpts=PTS-STARTPTS,hflip,split[cam1][cam2];${camPipFilter};${camFullFilter};[screen][cam]overlay=x='${xExpr}':y='${yExpr}':format=auto[with_pip];[with_pip][camfull]overlay=0:0:format=auto[out]`;
+    const camFilter = `[1:v]setpts=PTS-STARTPTS,hflip,crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2',scale=w='${sizeExpr}':h='${sizeExpr}':eval=frame:flags=fast_bilinear,format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*(${alphaExpr})*(${cornerExpr})'[cam]`;
+
+    // Position: interpolate between pip pos and fullscreen center
+    const xFull = Math.floor((outW - maxDim) / 2);
+    const yFull = Math.floor((outH - maxDim) / 2);
+    const pipXExpr = buildPosExpr(scaledKeyframes, 'pipX');
+    const pipYExpr = buildPosExpr(scaledKeyframes, 'pipY');
+    const xExpr = `(${pipXExpr})*(1-(${progLower}))+(${xFull})*(${progLower})`;
+    const yExpr = `(${pipYExpr})*(1-(${progLower}))+(${yFull})*(${progLower})`;
+
+    return `${screenFilter};${camFilter};[screen][cam]overlay=x='${xExpr}':y='${yExpr}':format=auto[out]`;
   }
 
   if (hasCamFull) {
