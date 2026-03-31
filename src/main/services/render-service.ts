@@ -238,15 +238,16 @@ export function buildAudioTrimFilter(
 ): string {
   const label = `[sa${index}]`;
 
-  if (screenHasAudio) {
-    return `[${screenIdx}:a]atrim=start=${sourceStart.toFixed(3)}:end=${sourceEnd.toFixed(3)},asetpts=PTS-STARTPTS${label}`;
-  }
-
+  // Prefer camera audio (microphone) over screen audio when available
   if (cameraIdx >= 0 && cameraHasAudio) {
     const offsetSec = normalizeCameraSyncOffsetMs(cameraSyncOffsetMs) / 1000;
     const audioStart = Math.max(0, sourceStart + offsetSec);
     const audioEnd = Math.max(audioStart + 0.001, sourceEnd + offsetSec);
     return `[${cameraIdx}:a]atrim=start=${audioStart.toFixed(3)}:end=${audioEnd.toFixed(3)},asetpts=PTS-STARTPTS${label}`;
+  }
+
+  if (screenHasAudio) {
+    return `[${screenIdx}:a]atrim=start=${sourceStart.toFixed(3)}:end=${sourceEnd.toFixed(3)},asetpts=PTS-STARTPTS${label}`;
   }
 
   const duration = (sourceEnd - sourceStart).toFixed(3);
@@ -255,8 +256,7 @@ export function buildAudioTrimFilter(
 
 function buildInputPlan(
   sections: RenderSectionInput[],
-  takeMap: Map<string, { screenPath: string | null; cameraPath: string | null }>,
-  hasCamera: boolean
+  takeMap: Map<string, { screenPath: string | null; cameraPath: string | null }>
 ) {
   const fpsProbePaths = new Set<string>();
   const sectionInputs: Array<{ screenIdx: number; cameraIdx: number; imageIdx: number }> = [];
@@ -280,7 +280,7 @@ function buildInputPlan(
       inputIndex += 1;
 
       let cameraIdx = -1;
-      if (hasCamera && take.cameraPath) {
+      if (take.cameraPath) {
         assertFilePath(take.cameraPath, 'Camera');
         args.push('-i', take.cameraPath);
         fpsProbePaths.add(take.cameraPath);
@@ -436,7 +436,7 @@ export async function renderComposite(
   }
 
   const hasCamera = keyframes.some((keyframe) => keyframe.pipVisible || keyframe.cameraFullscreen);
-  const { args, fpsProbePaths, sectionInputs } = buildInputPlan(sections, takeMap, hasCamera);
+  const { args, fpsProbePaths, sectionInputs } = buildInputPlan(sections, takeMap);
   const totalDurationSec = getTotalDurationSec(sections);
 
   const fpsProbeResults = await Promise.all(

@@ -294,7 +294,7 @@ describe('main/services/render-service', () => {
       {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 622,
-        probeVideoFpsWithFfmpeg: async () => 30,
+        probeVideoFpsWithFfmpeg: async () => ({ fps: 30, hasAudio: true }),
         runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
         })
@@ -333,7 +333,7 @@ describe('main/services/render-service', () => {
       {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 623,
-        probeVideoFpsWithFfmpeg: async () => 60,
+        probeVideoFpsWithFfmpeg: async () => ({ fps: 60, hasAudio: true }),
         runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
         })
@@ -759,7 +759,7 @@ describe('main/services/render-service', () => {
       {
         ffmpegPath: '/usr/bin/ffmpeg',
         now: () => 223,
-        probeVideoFpsWithFfmpeg: async () => 29.97,
+        probeVideoFpsWithFfmpeg: async () => ({ fps: 29.97, hasAudio: true }),
         runFfmpeg: createRunFfmpegStub(({ ffmpegPath, args }) => {
           execCalls.push({ bin: ffmpegPath, args });
         })
@@ -1076,8 +1076,13 @@ describe('main/services/render-service', () => {
 });
 
 describe('buildAudioTrimFilter', () => {
-  test('uses screen audio when available', () => {
+  test('prefers camera audio over screen audio when both available', () => {
     const filter = buildAudioTrimFilter(0, 1, true, true, 2, 5, 0, 0);
+    expect(filter).toBe('[1:a]atrim=start=2.000:end=5.000,asetpts=PTS-STARTPTS[sa0]');
+  });
+
+  test('falls back to screen audio when no camera available', () => {
+    const filter = buildAudioTrimFilter(0, -1, true, false, 2, 5, 0, 0);
     expect(filter).toBe('[0:a]atrim=start=2.000:end=5.000,asetpts=PTS-STARTPTS[sa0]');
   });
 

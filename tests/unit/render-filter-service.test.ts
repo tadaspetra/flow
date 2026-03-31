@@ -165,8 +165,13 @@ describe('main/services/render-filter-service', () => {
       1080
     );
 
-    expect(filter).toContain('[1:v]setpts=PTS-STARTPTS,hflip,split[cam1][cam2]');
-    expect(filter).toContain('[with_pip][camfull]overlay=0:0:format=auto[out]');
+    // Single camera stream with dynamic expand/shrink (no split/fade)
+    expect(filter).toContain('[1:v]setpts=PTS-STARTPTS,hflip,crop=');
+    expect(filter).toContain("scale=w='");
+    expect(filter).toContain(':eval=frame');
+    expect(filter).not.toContain('split[cam1][cam2]');
+    expect(filter).not.toContain('[with_pip]');
+    expect(filter).not.toContain('[camfull]');
   });
 
   test('buildFilterComplex scales screen into the editor canvas', () => {
