@@ -57,18 +57,34 @@ export function parseFfmpegProgress(
   };
 }
 
+export class FfmpegAbortError extends Error {
+  readonly code = 'FFMPEG_ABORTED';
+
+  constructor(message = 'ffmpeg render aborted') {
+    super(message);
+    this.name = 'FfmpegAbortError';
+  }
+}
+
 export function runFfmpeg({
   ffmpegPath,
   args,
   spawnImpl = spawn,
-  onProgress
+  onProgress,
+  signal
 }: {
   ffmpegPath?: string;
   args?: string[];
   spawnImpl?: typeof spawn;
   onProgress?: (progress: FfmpegProgress) => void;
+  signal?: AbortSignal;
 } = {}): Promise<{ stderr: string }> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new FfmpegAbortError());
+      return;
+    }
+
     const child = spawnImpl(ffmpegPath as string, Array.isArray(args) ? args : [], {
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -77,16 +93,19 @@ export function runFfmpeg({
     let stderr = '';
     let currentProgress: FfmpegProgressFields = {};
     let settled = false;
+    let abortedByCaller = false;
 
     function resolveOnce(value: { stderr: string }) {
       if (settled) return;
       settled = true;
+      detachAbort();
       resolve(value);
     }
 
     function rejectOnce(error: Error) {
       if (settled) return;
       settled = true;
+      detachAbort();
       reject(error);
     }
 
@@ -106,11 +125,45 @@ export function runFfmpeg({
 
         if (key === 'progress') {
           const parsed = parseFfmpegProgress(currentProgress);
-          if (parsed && typeof onProgress === 'function') onProgress(parsed);
+          if (parsed && typeof onProgress === 'function') {
+            try {
+              onProgress(parsed);
+            } catch (error) {
+              // Never let a progress listener crash ffmpeg draining.
+              console.warn('[ffmpeg-runner] onProgress listener threw:', error);
+            }
+          }
           currentProgress = {};
         }
       }
     }
+
+    function onAbort() {
+      if (settled) return;
+      abortedByCaller = true;
+      // Try graceful shutdown first (ffmpeg flushes the muxer on SIGINT);
+      // fall back to SIGKILL if the child is still alive shortly after.
+      try {
+        child.kill('SIGINT');
+      } catch (error) {
+        console.warn('[ffmpeg-runner] SIGINT failed:', error);
+      }
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          try {
+            child.kill('SIGKILL');
+          } catch (error) {
+            console.warn('[ffmpeg-runner] SIGKILL failed:', error);
+          }
+        }
+      }, 2000);
+    }
+
+    function detachAbort() {
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
     child.stdout.on('data', processStdoutChunk);
     child.stderr.on('data', (chunk) => {
@@ -123,6 +176,10 @@ export function runFfmpeg({
 
     child.once('close', (code) => {
       if (stdoutBuffer.trim()) processStdoutChunk('\n');
+      if (abortedByCaller) {
+        rejectOnce(new FfmpegAbortError());
+        return;
+      }
       if (code === 0) {
         resolveOnce({ stderr });
         return;

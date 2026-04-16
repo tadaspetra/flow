@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'vitest';
 
+import { vi } from 'vitest';
+
 import {
   createCameraRecordingStream,
   createScreenRecordingStream,
-  finalizeRecordingChunks,
+  finalizeStreamedRecording,
   getRecorderOptions,
   getRecorderFinalizeTimeoutMs,
   getRecorderTimesliceMs,
@@ -50,8 +52,10 @@ describe('recorder-utils', () => {
   });
 
   test('uses a bounded wait when recorder finalization stalls', () => {
-    expect(RECORDER_FINALIZE_TIMEOUT_MS).toBe(15000);
-    expect(getRecorderFinalizeTimeoutMs()).toBe(15000);
+    // 60s is generous enough for a rename-on-finalize on flaky disks while
+    // still bounding the UI wait if MediaRecorder.onstop never fires.
+    expect(RECORDER_FINALIZE_TIMEOUT_MS).toBe(60_000);
+    expect(getRecorderFinalizeTimeoutMs()).toBe(60_000);
   });
 
   test('throttles preview updates more aggressively while recording', () => {
@@ -144,33 +148,71 @@ describe('recorder-utils', () => {
     );
   });
 
-  test('finalizeRecordingChunks saves video data and returns the saved path', async () => {
-    const result = await finalizeRecordingChunks({
-      chunks: [new Blob(['screen-data'])],
-      saveFolder: '/tmp',
+  test('finalizeStreamedRecording renames the streamed temp file and returns the final path', async () => {
+    const finalize = vi.fn(async () => ({ path: '/tmp/screen.webm', bytesWritten: 2048 }));
+
+    const result = await finalizeStreamedRecording({
+      takeId: 'take-1',
       suffix: 'screen',
-      saveVideo: async () => '/tmp/screen.webm'
+      bytesWritten: 2048,
+      deps: { finalize }
     });
 
-    expect(result).toEqual(
-      expect.objectContaining({
-        suffix: 'screen',
-        path: '/tmp/screen.webm',
-        error: null
-      })
-    );
-    expect(result.blob.size).toBeGreaterThan(0);
+    expect(finalize).toHaveBeenCalledWith({ takeId: 'take-1', suffix: 'screen' });
+    expect(result).toEqual({
+      suffix: 'screen',
+      path: '/tmp/screen.webm',
+      error: null,
+      bytesWritten: 2048
+    });
   });
 
-  test('finalizeRecordingChunks reports save failures without throwing', async () => {
-    const result = await finalizeRecordingChunks({
-      chunks: [new Blob(['camera-data'])],
-      saveFolder: '/tmp',
+  test('finalizeStreamedRecording reports an error and cancels when no bytes were written', async () => {
+    const finalize = vi.fn();
+    const cancel = vi.fn(async () => ({ cancelled: true }));
+
+    const result = await finalizeStreamedRecording({
+      takeId: 'take-empty',
       suffix: 'camera',
-      saveVideo: async () => ''
+      bytesWritten: 0,
+      deps: { finalize, cancel }
+    });
+
+    expect(finalize).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith({ takeId: 'take-empty', suffix: 'camera' });
+    expect(result.path).toBeNull();
+    expect(result.bytesWritten).toBe(0);
+    expect(result.error).toMatch(/produced no data/i);
+  });
+
+  test('finalizeStreamedRecording surfaces main-process finalize failures', async () => {
+    const finalize = vi.fn(async () => {
+      throw new Error('rename failed');
+    });
+
+    const result = await finalizeStreamedRecording({
+      takeId: 'take-err',
+      suffix: 'screen',
+      bytesWritten: 128,
+      deps: { finalize }
     });
 
     expect(result.path).toBeNull();
-    expect(result.error).toMatch(/camera recording could not be saved/i);
+    expect(result.error).toBe('rename failed');
+    expect(result.bytesWritten).toBe(128);
+  });
+
+  test('finalizeStreamedRecording treats an empty finalize path as failure', async () => {
+    const finalize = vi.fn(async () => ({ path: '', bytesWritten: 42 }));
+
+    const result = await finalizeStreamedRecording({
+      takeId: 'take-bad',
+      suffix: 'screen',
+      bytesWritten: 42,
+      deps: { finalize }
+    });
+
+    expect(result.path).toBeNull();
+    expect(result.error).toMatch(/could not be saved/i);
   });
 });

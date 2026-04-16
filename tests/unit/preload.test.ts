@@ -2,18 +2,24 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ElectronApi } from '../../src/shared/electron-api';
 
-const { mockContextBridge, mockIpcRenderer } = vi.hoisted(() => ({
+const { mockContextBridge, mockIpcRenderer, mockWebUtils } = vi.hoisted(() => ({
   mockContextBridge: { exposeInMainWorld: vi.fn() },
   mockIpcRenderer: {
     invoke: vi.fn(),
     on: vi.fn(),
     removeListener: vi.fn()
+  },
+  mockWebUtils: {
+    getPathForFile: vi.fn((file: unknown) =>
+      (file as { _mockPath?: string })?._mockPath || ''
+    )
   }
 }));
 
 vi.mock('electron', () => ({
   contextBridge: mockContextBridge,
-  ipcRenderer: mockIpcRenderer
+  ipcRenderer: mockIpcRenderer,
+  webUtils: mockWebUtils
 }));
 
 describe('preload', () => {
@@ -51,5 +57,48 @@ describe('preload', () => {
       'render-composite-progress',
       handler
     );
+  });
+
+  test('getPathForFile delegates to webUtils for drag-dropped files', () => {
+    const file = { _mockPath: '/Users/test/foo.png' } as unknown as File;
+    expect(electronAPI.getPathForFile(file)).toBe('/Users/test/foo.png');
+    expect(mockWebUtils.getPathForFile).toHaveBeenCalledWith(file);
+  });
+
+  test('getPathForFile returns empty string for missing/invalid files', () => {
+    expect(electronAPI.getPathForFile(null as unknown as File)).toBe('');
+    expect(electronAPI.getPathForFile({} as unknown as File)).toBe('');
+  });
+
+  test('recording lifecycle methods invoke the matching IPC channels', () => {
+    electronAPI.recordingBegin({ takeId: 't', suffix: 'screen', folder: '/tmp' });
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('recording:begin', {
+      takeId: 't',
+      suffix: 'screen',
+      folder: '/tmp'
+    });
+
+    const data = new Uint8Array([1, 2, 3]);
+    electronAPI.recordingAppend({ takeId: 't', suffix: 'screen', data });
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('recording:append', {
+      takeId: 't',
+      suffix: 'screen',
+      data
+    });
+
+    electronAPI.recordingFinalize({ takeId: 't', suffix: 'screen' });
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('recording:finalize', {
+      takeId: 't',
+      suffix: 'screen'
+    });
+
+    electronAPI.recordingCancel({ takeId: 't', suffix: 'screen' });
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('recording:cancel', {
+      takeId: 't',
+      suffix: 'screen'
+    });
+
+    electronAPI.recordingListOrphans('/proj');
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('recording:list-orphans', '/proj');
   });
 });

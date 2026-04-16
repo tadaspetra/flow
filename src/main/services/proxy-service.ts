@@ -41,6 +41,7 @@ export interface GenerateProxyOpts {
   screenPath: string;
   proxyPath: string;
   onProgress?: (progress: FfmpegProgress) => void;
+  signal?: AbortSignal;
 }
 
 export interface GenerateProxyDeps {
@@ -105,7 +106,12 @@ export function generateProxy(
     ];
 
     try {
-      await runFfmpegImpl({ ffmpegPath, args, onProgress: opts.onProgress });
+      await runFfmpegImpl({
+        ffmpegPath,
+        args,
+        onProgress: opts.onProgress,
+        signal: opts.signal
+      });
       fsImpl.renameSync(tmpPath, opts.proxyPath);
     } catch (err) {
       try {

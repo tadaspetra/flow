@@ -216,6 +216,60 @@ describe('main/services/project-service integration', () => {
     expect(reopened.recoveryTake).toBeNull();
   });
 
+  test('recovery take survives a missing camera file by dropping the camera pointer', () => {
+    const created = service.createProject({ name: 'RecoveryPartial', parentFolder: sandbox.root });
+    const screenPath = path.join(created.projectPath, 'screen.webm');
+    const cameraPath = path.join(created.projectPath, 'camera.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+    fs.writeFileSync(cameraPath, 'camera', 'utf8');
+
+    service.setRecoveryTake({
+      projectPath: created.projectPath,
+      take: {
+        id: 'take-partial',
+        screenPath,
+        cameraPath,
+        recordedDuration: 2,
+        sections: [{ start: 0, end: 2, sourceStart: 0, sourceEnd: 2 }],
+        trimSegments: []
+      }
+    });
+
+    // Simulate the camera file disappearing (crash mid-finalize, manual delete, etc.)
+    fs.unlinkSync(cameraPath);
+
+    const opened = service.openProject(created.projectPath);
+    expect(opened.recoveryTake).not.toBeNull();
+    expect(opened.recoveryTake!.id).toBe('take-partial');
+    expect(opened.recoveryTake!.screenPath).toBe(screenPath);
+    expect(opened.recoveryTake!.cameraPath).toBeNull();
+    // Recovery file should still exist so the next open can still recover it.
+    expect(fs.existsSync(path.join(created.projectPath, '.pending-recording.json'))).toBe(true);
+  });
+
+  test('recovery take with no screen file is discarded on open', () => {
+    const created = service.createProject({ name: 'RecoveryGone', parentFolder: sandbox.root });
+    const screenPath = path.join(created.projectPath, 'screen.webm');
+    fs.writeFileSync(screenPath, 'screen', 'utf8');
+
+    service.setRecoveryTake({
+      projectPath: created.projectPath,
+      take: {
+        id: 'take-gone',
+        screenPath,
+        recordedDuration: 1,
+        sections: [{ start: 0, end: 1, sourceStart: 0, sourceEnd: 1 }]
+      }
+    });
+
+    fs.unlinkSync(screenPath);
+
+    const opened = service.openProject(created.projectPath);
+    expect(opened.recoveryTake).toBeNull();
+    // Stale recovery file is cleaned up.
+    expect(fs.existsSync(path.join(created.projectPath, '.pending-recording.json'))).toBe(false);
+  });
+
   test('saveVideo writes recording atomically and verifies file size', () => {
     const created = service.createProject({ name: 'SaveVideo', parentFolder: sandbox.root });
     const data = Buffer.alloc(1024, 0xab);

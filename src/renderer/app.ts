@@ -31,7 +31,7 @@ import {
 } from './features/timeline/camera-sync';
 import { getTakePlaybackSources } from './features/timeline/take-playback-sources';
 import {
-  finalizeRecordingChunks,
+  finalizeStreamedRecording,
   getRecorderFinalizeTimeoutMs,
   getRecorderOptions,
   getRecorderTimesliceMs,
@@ -122,6 +122,7 @@ let cameraStream = null;
 let audioStream = null;
 let recorders = [];
 let recording = false;
+let pendingRecordingTakeId = null;
 let screenRecInterval = null;
 let trackEndedCleanups = [];
 let timerInterval = null;
@@ -2060,15 +2061,32 @@ function toggleRecording() {
   else stopRecording();
 }
 
-function createRecorder(stream, suffix) {
-  const chunks = [];
+async function createRecorder(stream, suffix, takeId) {
   let recorderError = null;
+  let bytesWritten = 0;
+  // Serialize IPC appends so chunks land on disk in the same order
+  // MediaRecorder emitted them. A new append is only kicked off after the
+  // prior append has completed; any failure flips recorderError and is
+  // surfaced on finalize.
+  let appendChain = Promise.resolve();
+
   const recorderOptions = getRecorderOptions({
     suffix,
     hasAudio: typeof stream?.getAudioTracks === 'function' && stream.getAudioTracks().length > 0
   });
+
+  // Open the on-disk write handle BEFORE starting the recorder. If this fails
+  // (e.g., folder permission or disk full) we surface the error before any
+  // MediaRecorder state is created, so caller can clean up the media stream.
+  await window.electronAPI.recordingBegin({
+    takeId,
+    suffix,
+    folder: saveFolder
+  });
+
   const recorder = new MediaRecorder(stream, recorderOptions);
   console.log(`[Recorder] ${suffix} configured`, {
+    takeId,
     mimeType: recorder.mimeType || recorderOptions.mimeType || 'default',
     videoTracks: typeof stream?.getVideoTracks === 'function' ? stream.getVideoTracks().length : 0,
     audioTracks: typeof stream?.getAudioTracks === 'function' ? stream.getAudioTracks().length : 0,
@@ -2077,7 +2095,30 @@ function createRecorder(stream, suffix) {
   });
 
   recorder.ondataavailable = (e) => {
-    if (e.data.size > 0) chunks.push(e.data);
+    if (!e?.data || e.data.size <= 0) return;
+    // Capture the blob synchronously so the subsequent awaits can happen on
+    // the chained promise without racing future dataavailable events.
+    const chunk = e.data;
+    appendChain = appendChain.then(async () => {
+      try {
+        const buffer = await chunk.arrayBuffer();
+        const result = await window.electronAPI.recordingAppend({
+          takeId,
+          suffix,
+          data: buffer
+        });
+        if (result && typeof result.bytesWritten === 'number') {
+          bytesWritten = result.bytesWritten;
+        } else {
+          bytesWritten += buffer.byteLength;
+        }
+      } catch (err) {
+        if (!recorderError) {
+          recorderError = err instanceof Error ? err.message : String(err);
+        }
+        console.error(`[Recorder] ${suffix} chunk append failed:`, err);
+      }
+    });
   };
 
   recorder.onerror = (event) => {
@@ -2085,7 +2126,8 @@ function createRecorder(stream, suffix) {
     console.error(`[Recorder] ${suffix} error`, event?.error || event);
   };
 
-  // blobPromise resolves with { blob, path } when recording stops
+  // blobPromise resolves with { path, error, suffix, bytesWritten } after the
+  // streamed temp file has been flushed and renamed.
   recorder.blobPromise = new Promise((resolve) => {
     let settled = false;
     const settle = (result) => {
@@ -2095,11 +2137,22 @@ function createRecorder(stream, suffix) {
     };
 
     recorder.onstop = async () => {
-      const result = await finalizeRecordingChunks({
-        chunks,
-        saveFolder,
-        saveVideo: window.electronAPI.saveVideo,
-        suffix
+      // Wait for the serialized append chain to drain before finalizing so
+      // the temp file contains every chunk MediaRecorder surfaced.
+      try {
+        await appendChain;
+      } catch (err) {
+        console.error(`[Recorder] ${suffix} append chain flush failed:`, err);
+      }
+
+      const result = await finalizeStreamedRecording({
+        takeId,
+        suffix,
+        bytesWritten,
+        deps: {
+          finalize: (opts) => window.electronAPI.recordingFinalize(opts),
+          cancel: (opts) => window.electronAPI.recordingCancel(opts)
+        }
       });
 
       const error = result.path
@@ -2119,6 +2172,7 @@ function createRecorder(stream, suffix) {
   });
 
   recorder.suffix = suffix;
+  recorder.takeId = takeId;
   return recorder;
 }
 
@@ -2170,6 +2224,16 @@ async function startRecording() {
   audioChunkBuffer = [];
   scribeLastFailureReason = null;
   scribeManualClose = false;
+  // Reset scribe audio timestamp offset and worklet registration per take so
+  // timestamps are never carried over from a previous recording session.
+  scribeAudioOffset = 0;
+  workletRegistered = null;
+
+  // The takeId is generated once for this recording session and shared by
+  // both recorders, so the on-disk temp files can be matched back to the
+  // same logical take on recovery.
+  const takeId = `take-${Date.now()}`;
+  pendingRecordingTakeId = takeId;
 
   // Individual screen (with audio)
   if (screenStream) {
@@ -2180,7 +2244,17 @@ async function startRecording() {
         '[Recorder] screen recording track settings:',
         screenTrack?.getSettings?.() || {}
       );
-      recorders.push(createRecorder(screenOnly, 'screen'));
+      try {
+        recorders.push(await createRecorder(screenOnly, 'screen', takeId));
+      } catch (err) {
+        console.error('[Recorder] Failed to prepare screen recorder:', err);
+        setTranscriptStatus(
+          `Could not start screen recording: ${err instanceof Error ? err.message : String(err)}`,
+          'error'
+        );
+        pendingRecordingTakeId = null;
+        return;
+      }
     }
   }
 
@@ -2193,7 +2267,13 @@ async function startRecording() {
         '[Recorder] camera recording track settings:',
         cameraTrack?.getSettings?.() || {}
       );
-      recorders.push(createRecorder(cameraOnly, 'camera'));
+      try {
+        recorders.push(await createRecorder(cameraOnly, 'camera', takeId));
+      } catch (err) {
+        // Camera is best-effort: continue the recording with screen only so
+        // one pipeline never blocks the other (see recording safety notes).
+        console.warn('[Recorder] Failed to prepare camera recorder; continuing without camera:', err);
+      }
     }
   }
 
@@ -2882,7 +2962,8 @@ async function stopRecording() {
     if (finalizeErrors.length > 0) {
       console.warn('Recording finalized with partial failures:', finalizeErrors);
     }
-    const takeId = `take-${Date.now()}`;
+    const takeId = pendingRecordingTakeId || `take-${Date.now()}`;
+    pendingRecordingTakeId = null;
     const takeCreatedAt = new Date().toISOString();
     const screenPath = results.screen.path;
     const cameraPath = results.camera?.path || null;
@@ -2976,7 +3057,20 @@ async function stopRecording() {
     }
   } else if (finalizeErrors.length > 0) {
     console.error('Recording finalize failed:', finalizeErrors);
+    // Best-effort: drop any remaining temp files so the project folder stays
+    // clean. The user will have already seen this error surfaced in the
+    // transcript status.
+    if (pendingRecordingTakeId) {
+      for (const suffix of ['screen', 'camera']) {
+        window.electronAPI
+          .recordingCancel({ takeId: pendingRecordingTakeId, suffix })
+          .catch(() => {});
+      }
+    }
+    pendingRecordingTakeId = null;
     showProjectHomeMessage(finalizeErrors.join(' '));
+  } else {
+    pendingRecordingTakeId = null;
   }
   updateWorkspaceHeader();
 }
@@ -4018,14 +4112,23 @@ editorScreenTrack.addEventListener('drop', async (e) => {
 
   if (!editorState || editorState.rendering || !activeProjectPath) return;
   const file = e.dataTransfer?.files?.[0];
-  if (!file || !file.path || !isImageFile(file.name)) return;
+  if (!file || !isImageFile(file.name)) return;
+
+  // Electron 32+ removed File.path; use the exposed webUtils helper so drag
+  // imports keep working on current runtimes.
+  const filePath =
+    (typeof window.electronAPI.getPathForFile === 'function' &&
+      window.electronAPI.getPathForFile(file)) ||
+    file.path ||
+    '';
+  if (!filePath) return;
 
   const bandEl = e.target.closest?.('[data-section-id]');
   const sectionId = bandEl?.dataset?.sectionId;
   const section = sectionId ? editorState.sections.find((s) => s.id === sectionId) : null;
   if (!section) return;
 
-  await importImageToSection(file.path, section);
+  await importImageToSection(filePath, section);
 });
 
 // ===== Image picker button =====

@@ -79,7 +79,7 @@ export function createProjectService({ app }: { app: Pick<App, 'getPath'> }) {
       : typeof take.screenPath === 'string'
         ? take.screenPath
         : null;
-    const cameraPath = projectFolder
+    const rawCameraPath = projectFolder
       ? toProjectAbsolutePath(projectFolder, take.cameraPath)
       : typeof take.cameraPath === 'string'
         ? take.cameraPath
@@ -105,8 +105,12 @@ export function createProjectService({ app }: { app: Pick<App, 'getPath'> }) {
           .filter((segment): segment is RecoveryTrimSegment => Boolean(segment))
       : [];
 
+    // Screen is the essential recovery asset — without it we cannot recover.
     if (!screenPath || !fs.existsSync(screenPath)) return null;
-    if (cameraPath && !fs.existsSync(cameraPath)) return null;
+    // Camera is optional: if the camera file was never saved (or was moved/
+    // deleted) we still recover the screen take rather than discarding
+    // everything. Dropping the reference here prevents a broken pointer.
+    const cameraPath = rawCameraPath && fs.existsSync(rawCameraPath) ? rawCameraPath : null;
 
     return {
       id: typeof take.id === 'string' && take.id ? take.id : `recovery-${Date.now()}`,
@@ -122,9 +126,11 @@ export function createProjectService({ app }: { app: Pick<App, 'getPath'> }) {
   function readRecoveryTake(projectFolder: string): RecoveryTake | null {
     const filePath = getProjectRecoveryFilePath(projectFolder);
     const raw = readJsonFile<unknown | null>(filePath, null);
-    const normalized = normalizeRecoveryTake(raw, projectFolder);
     if (!raw) return null;
+    const normalized = normalizeRecoveryTake(raw, projectFolder);
     if (normalized) return normalized;
+    // Recovery payload exists but references media we can no longer use.
+    // Remove it so the next save path is not blocked by a stale pointer.
     safeUnlink(filePath);
     return null;
   }

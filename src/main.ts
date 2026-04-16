@@ -9,6 +9,7 @@ import { renderComposite } from './main/services/render-service';
 import { computeSections } from './main/services/sections-service';
 import { getScribeToken } from './main/services/scribe-service';
 import * as proxyService from './main/services/proxy-service';
+import * as recordingService from './main/services/recording-service';
 
 let win: BrowserWindow | null = null;
 
@@ -25,7 +26,8 @@ registerIpcHandlers({
   renderComposite,
   computeSections,
   getScribeToken,
-  proxyService
+  proxyService,
+  recordingService
 });
 
 function createMainWindow(): void {

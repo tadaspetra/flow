@@ -5,7 +5,12 @@ export const RECORDER_MIME_CANDIDATES = [
 ] as const;
 
 export const RECORDER_TIMESLICE_MS = 1000;
-export const RECORDER_FINALIZE_TIMEOUT_MS = 15000;
+// Recording bytes are streamed to disk as they arrive (see
+// recording-service), so the finalize step is just flush+rename. We still
+// bound the wait so a pathological MediaRecorder bug cannot wedge stop
+// forever, but the value now reflects "real worst case for a rename on a
+// flaky disk" rather than "time to upload the whole blob via IPC".
+export const RECORDER_FINALIZE_TIMEOUT_MS = 60_000;
 export const PREVIEW_FPS_IDLE = 30;
 export const PREVIEW_FPS_RECORDING = 12;
 
@@ -14,13 +19,12 @@ type MediaRecorderCtorLike = {
 };
 
 type MediaStreamCtorLike = new (tracks?: MediaStreamTrack[]) => MediaStream;
-type BlobCtorLike = new (blobParts?: BlobPart[], options?: BlobPropertyBag) => Blob;
 
 export interface FinalizedRecordingResult {
-  blob: Blob;
   error: string | null;
   path: string | null;
   suffix: string;
+  bytesWritten: number;
 }
 
 export function getSupportedRecorderMimeType(
@@ -102,54 +106,63 @@ export function createScreenRecordingStream(
   return new MediaStreamCtor([...videoTracks, ...audioTracks]);
 }
 
-export async function finalizeRecordingChunks({
-  chunks,
-  saveFolder,
-  saveVideo,
+export interface FinalizeStreamedRecordingDeps {
+  finalize: (opts: {
+    takeId: string;
+    suffix: string;
+  }) => Promise<{ path: string; bytesWritten: number }>;
+  cancel?: (opts: { takeId: string; suffix: string }) => Promise<{ cancelled: boolean }>;
+}
+
+/**
+ * Finalize a recording whose chunks have already been streamed to disk via
+ * the recording-service IPC. This is an atomic rename on the main side so it
+ * is fast and tolerant of large recordings.
+ */
+export async function finalizeStreamedRecording({
+  takeId,
   suffix,
-  BlobCtor = globalThis.Blob,
-  mimeType = 'video/webm'
+  bytesWritten,
+  deps
 }: {
-  chunks: BlobPart[];
-  saveFolder: string;
-  saveVideo: (
-    buffer: ArrayBuffer,
-    saveFolder: string,
-    suffix: string
-  ) => Promise<string | null | undefined>;
+  takeId: string;
   suffix: string;
-  BlobCtor?: BlobCtorLike;
-  mimeType?: string;
+  bytesWritten: number;
+  deps: FinalizeStreamedRecordingDeps;
 }): Promise<FinalizedRecordingResult> {
-  const blob = new BlobCtor(chunks, { type: mimeType });
-  if (blob.size <= 0) {
+  if (!bytesWritten || bytesWritten <= 0) {
+    if (deps.cancel) {
+      try {
+        await deps.cancel({ takeId, suffix });
+      } catch (error) {
+        console.warn(`[Recorder] cancel after empty ${suffix} recording failed:`, error);
+      }
+    }
     return {
-      blob,
       error: `${suffix} recording produced no data`,
       path: null,
-      suffix
+      suffix,
+      bytesWritten: 0
     };
   }
 
   try {
-    const buffer = await blob.arrayBuffer();
-    const savedPath = await saveVideo(buffer, saveFolder, suffix);
-    if (typeof savedPath !== 'string' || !savedPath.trim()) {
+    const result = await deps.finalize({ takeId, suffix });
+    if (!result?.path) {
       throw new Error(`${suffix} recording could not be saved`);
     }
-
     return {
-      blob,
       error: null,
-      path: savedPath,
-      suffix
+      path: result.path,
+      suffix,
+      bytesWritten: result.bytesWritten ?? bytesWritten
     };
   } catch (error) {
     return {
-      blob,
       error: error instanceof Error ? error.message : String(error),
       path: null,
-      suffix
+      suffix,
+      bytesWritten
     };
   }
 }

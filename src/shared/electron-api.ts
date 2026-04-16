@@ -25,6 +25,42 @@ export interface GenerateProxyOpts {
   durationSec?: number;
 }
 
+export interface RecordingBeginOpts {
+  takeId: string;
+  suffix: string;
+  folder: string;
+  extension?: string;
+}
+
+export interface RecordingBeginResult {
+  tempPath: string;
+  finalPath: string;
+}
+
+export interface RecordingAppendOpts {
+  takeId: string;
+  suffix: string;
+  data: ArrayBuffer | Uint8Array;
+}
+
+export interface RecordingAppendResult {
+  bytesWritten: number;
+}
+
+export interface RecordingFinalizeOpts {
+  takeId: string;
+  suffix: string;
+}
+
+export interface RecordingFinalizeResult {
+  path: string;
+  bytesWritten: number;
+}
+
+export interface RecordingCancelResult {
+  cancelled: boolean;
+}
+
 export interface ProjectEnvelope {
   projectPath: string;
   project: ProjectData;
@@ -82,4 +118,10 @@ export interface ElectronApi {
   getScribeToken: () => Promise<string>;
   generateProxy: (opts: GenerateProxyOpts) => Promise<string | null>;
   onProxyProgress: (listener: (payload: ProxyProgressUpdate) => void) => () => void;
+  getPathForFile: (file: File) => string;
+  recordingBegin: (opts: RecordingBeginOpts) => Promise<RecordingBeginResult>;
+  recordingAppend: (opts: RecordingAppendOpts) => Promise<RecordingAppendResult>;
+  recordingFinalize: (opts: RecordingFinalizeOpts) => Promise<RecordingFinalizeResult>;
+  recordingCancel: (opts: RecordingFinalizeOpts) => Promise<RecordingCancelResult>;
+  recordingListOrphans: (folder: string) => Promise<string[]>;
 }

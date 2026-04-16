@@ -1,5 +1,8 @@
-const MIN_CAMERA_SYNC_OFFSET_MS = -2000;
-const MAX_CAMERA_SYNC_OFFSET_MS = 2000;
+import { normalizeCameraSyncOffsetMs } from '../../../shared/domain/camera-sync';
+
+// Re-export the shared normalization so the renderer keeps a single import
+// site while domain rules stay in src/shared/.
+export { normalizeCameraSyncOffsetMs };
 
 export interface PlaybackSeekPlan {
   targetSourceTime: number;
@@ -7,12 +10,6 @@ export interface PlaybackSeekPlan {
   screenNeedsSeek: boolean;
   cameraNeedsSeek: boolean;
   needsSeek: boolean;
-}
-
-export function normalizeCameraSyncOffsetMs(value: unknown): number {
-  const offset = Math.round(Number(value));
-  if (!Number.isFinite(offset)) return 0;
-  return Math.max(MIN_CAMERA_SYNC_OFFSET_MS, Math.min(MAX_CAMERA_SYNC_OFFSET_MS, offset));
 }
 
 export function resolveCameraPlaybackTargetTime(

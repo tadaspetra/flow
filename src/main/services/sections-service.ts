@@ -31,7 +31,11 @@ export function computeSections(
   const merged = [padded[0]];
   for (let index = 1; index < padded.length; index += 1) {
     const last = merged[merged.length - 1];
-    if (padded[index].start < last.end) {
+    // Merge segments whose padded ranges touch OR overlap. The renderer applies
+    // the same <= rule when it pre-computes fallback sections; aligning the
+    // main-process path here keeps both sides producing the same section count
+    // for identical input.
+    if (padded[index].start <= last.end) {
       last.end = Math.max(last.end, padded[index].end);
     } else {
       merged.push(padded[index]);

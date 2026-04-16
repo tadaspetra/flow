@@ -56,6 +56,7 @@ export interface RenderCompositeDeps {
   ffmpegPath?: string | null;
   now?: () => number;
   onProgress?: (progress: RenderProgressUpdate) => void;
+  signal?: AbortSignal;
 }
 
 const MAX_OVERLAY_FILTER_LENGTH = 100000;
@@ -542,6 +543,7 @@ export async function renderComposite(
     await runFfmpegProcess({
       ffmpegPath,
       args,
+      signal: deps.signal,
       onProgress: (progress) => {
         if (!onProgress) return;
         const update = buildRenderProgressUpdate(progress, totalDurationSec);

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import url from 'node:url';
 
 import type { ElectronApi, RenderProgressUpdate, ProxyProgressUpdate } from './shared/electron-api';
@@ -53,7 +53,22 @@ const electronApi: ElectronApi = {
     const handler = (_event: unknown, payload: ProxyProgressUpdate) => listener(payload);
     ipcRenderer.on('proxy:progress', handler);
     return () => ipcRenderer.removeListener('proxy:progress', handler);
-  }
+  },
+  getPathForFile: (file) => {
+    // Electron 32+ removed File.path; webUtils.getPathForFile is the supported
+    // bridge. Guard against non-File inputs from the renderer.
+    if (!file || typeof webUtils?.getPathForFile !== 'function') return '';
+    try {
+      return webUtils.getPathForFile(file) || '';
+    } catch {
+      return '';
+    }
+  },
+  recordingBegin: (opts) => ipcRenderer.invoke('recording:begin', opts),
+  recordingAppend: (opts) => ipcRenderer.invoke('recording:append', opts),
+  recordingFinalize: (opts) => ipcRenderer.invoke('recording:finalize', opts),
+  recordingCancel: (opts) => ipcRenderer.invoke('recording:cancel', opts),
+  recordingListOrphans: (folder) => ipcRenderer.invoke('recording:list-orphans', folder)
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronApi);

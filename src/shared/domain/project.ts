@@ -1,11 +1,17 @@
 import path from 'node:path';
 
+import {
+  MAX_CAMERA_SYNC_OFFSET_MS,
+  MIN_CAMERA_SYNC_OFFSET_MS,
+  normalizeCameraSyncOffsetMs
+} from './camera-sync';
+
+export { MAX_CAMERA_SYNC_OFFSET_MS, MIN_CAMERA_SYNC_OFFSET_MS, normalizeCameraSyncOffsetMs };
+
 export const MIN_BACKGROUND_ZOOM = 1;
 export const MAX_BACKGROUND_ZOOM = 3;
 export const MIN_BACKGROUND_PAN = -1;
 export const MAX_BACKGROUND_PAN = 1;
-export const MIN_CAMERA_SYNC_OFFSET_MS = -2000;
-export const MAX_CAMERA_SYNC_OFFSET_MS = 2000;
 export const EXPORT_AUDIO_PRESET_OFF = 'off';
 export const EXPORT_AUDIO_PRESET_COMPRESSED = 'compressed';
 export const EXPORT_VIDEO_PRESET_FAST = 'fast';
@@ -259,12 +265,6 @@ export function normalizeExportVideoPreset(value: unknown): ExportVideoPreset {
   return value === EXPORT_VIDEO_PRESET_FAST
     ? EXPORT_VIDEO_PRESET_FAST
     : EXPORT_VIDEO_PRESET_QUALITY;
-}
-
-export function normalizeCameraSyncOffsetMs(value: unknown): number {
-  const offset = Math.round(Number(value));
-  if (!Number.isFinite(offset)) return 0;
-  return Math.max(MIN_CAMERA_SYNC_OFFSET_MS, Math.min(MAX_CAMERA_SYNC_OFFSET_MS, offset));
 }
 
 export function createDefaultProject(name: unknown = 'Untitled Project'): ProjectData {

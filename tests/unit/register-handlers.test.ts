@@ -27,6 +27,20 @@ function createProxyServiceStub() {
   };
 }
 
+function createRecordingServiceStub() {
+  return {
+    beginRecording: vi.fn(() => ({ tempPath: '/tmp/x.part', finalPath: '/tmp/x.webm' })),
+    appendRecordingChunk: vi.fn().mockResolvedValue({ bytesWritten: 10 }),
+    finalizeRecording: vi.fn(() => ({ path: '/tmp/x.webm', bytesWritten: 10 })),
+    cancelRecording: vi.fn(() => ({ cancelled: true })),
+    findOrphanRecordingParts: vi.fn(() => []),
+    computeRecordingPaths: vi.fn(),
+    listActiveRecordings: vi.fn(() => []),
+    getActiveRecordingCount: vi.fn(() => 0),
+    _resetForTests: vi.fn()
+  };
+}
+
 function registerWithHandlers() {
   const handlers = new Map<string, (event: unknown, payload: unknown) => unknown>();
   const ipcMain = {
@@ -35,12 +49,16 @@ function registerWithHandlers() {
     }
   };
   const renderComposite = vi.fn(
-    async (_opts: unknown, deps: { onProgress: (u: unknown) => void }) => {
-      deps.onProgress({ phase: 'rendering', percent: 0.5, status: 'Rendering 50%' });
+    async (
+      _opts: unknown,
+      deps: { onProgress?: (u: unknown) => void; signal?: AbortSignal }
+    ) => {
+      deps.onProgress?.({ phase: 'rendering', percent: 0.5, status: 'Rendering 50%' });
       return '/tmp/output.mp4';
     }
   );
   const proxyService = createProxyServiceStub();
+  const recordingService = createRecordingServiceStub();
 
   registerIpcHandlers({
     ipcMain,
@@ -53,17 +71,23 @@ function registerWithHandlers() {
     renderComposite,
     computeSections: vi.fn(),
     getScribeToken: vi.fn(),
-    proxyService
+    proxyService,
+    recordingService
   } as unknown as Parameters<typeof registerIpcHandlers>[0]);
 
-  return { handlers, renderComposite, proxyService };
+  return { handlers, renderComposite, proxyService, recordingService };
 }
 
 describe('main/ipc/register-handlers', () => {
   test('render-composite forwards progress updates over IPC', async () => {
     const { handlers, renderComposite } = registerWithHandlers();
 
-    const sender = { send: vi.fn() };
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(false),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
     const result = await handlers.get('render-composite')!({ sender }, { sections: [] });
 
     expect(renderComposite).toHaveBeenCalledWith(
@@ -80,9 +104,75 @@ describe('main/ipc/register-handlers', () => {
     expect(result).toBe('/tmp/output.mp4');
   });
 
+  test('render-composite suppresses progress when the renderer is destroyed', async () => {
+    const { handlers } = registerWithHandlers();
+
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(true),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
+    await handlers.get('render-composite')!({ sender }, { sections: [] });
+
+    expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  test('render-composite aborts the ffmpeg signal when the sender is destroyed', async () => {
+    const { handlers, renderComposite } = registerWithHandlers();
+
+    const destroyListeners: Array<() => void> = [];
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(false),
+      once: vi.fn((event: string, listener: () => void) => {
+        if (event === 'destroyed') destroyListeners.push(listener);
+      }),
+      removeListener: vi.fn()
+    };
+
+    let capturedSignal: AbortSignal | undefined;
+    renderComposite.mockImplementationOnce(
+      async (_opts: unknown, deps: { signal?: AbortSignal }) => {
+        capturedSignal = deps.signal;
+        // Emulate a renderer close by firing the captured destroyed listener
+        // BEFORE renderComposite resolves, so we can observe the abort flow.
+        destroyListeners.forEach((listener) => listener());
+        return '/tmp/output.mp4';
+      }
+    );
+
+    await handlers.get('render-composite')!({ sender }, { sections: [] });
+
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal!.aborted).toBe(true);
+    expect(sender.removeListener).toHaveBeenCalledWith('destroyed', expect.any(Function));
+  });
+
+  test('render-composite does not crash when sender.send throws', async () => {
+    const { handlers } = registerWithHandlers();
+
+    const sender = {
+      send: vi.fn(() => {
+        throw new Error('channel closed');
+      }),
+      isDestroyed: vi.fn().mockReturnValue(false),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
+    await expect(
+      handlers.get('render-composite')!({ sender }, { sections: [] })
+    ).resolves.toBe('/tmp/output.mp4');
+  });
+
   test('proxy:generate returns derived proxy path and sends done on success', async () => {
     const { handlers } = registerWithHandlers();
-    const sender = { send: vi.fn(), isDestroyed: vi.fn().mockReturnValue(false) };
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(false),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
 
     const result = handlers.get('proxy:generate')!(
       { sender },
@@ -114,7 +204,12 @@ describe('main/ipc/register-handlers', () => {
   test('proxy:generate sends error on failure', async () => {
     const { handlers, proxyService } = registerWithHandlers();
     proxyService.generateProxy.mockRejectedValueOnce(new Error('encode failed'));
-    const sender = { send: vi.fn(), isDestroyed: vi.fn().mockReturnValue(false) };
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(false),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
 
     handlers.get('proxy:generate')!(
       { sender },
@@ -133,7 +228,12 @@ describe('main/ipc/register-handlers', () => {
   test('proxy:generate does not send events when sender is destroyed', async () => {
     const { handlers, proxyService } = registerWithHandlers();
     proxyService.generateProxy.mockResolvedValueOnce(undefined);
-    const sender = { send: vi.fn(), isDestroyed: vi.fn().mockReturnValue(true) };
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(true),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
 
     handlers.get('proxy:generate')!(
       { sender },
@@ -152,7 +252,12 @@ describe('main/ipc/register-handlers', () => {
 
   test('proxy:generate returns null when screenPath is missing', () => {
     const { handlers } = registerWithHandlers();
-    const sender = { send: vi.fn(), isDestroyed: vi.fn().mockReturnValue(false) };
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(false),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
 
     const result = handlers.get('proxy:generate')!(
       { sender },
@@ -160,5 +265,73 @@ describe('main/ipc/register-handlers', () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  test('recording:begin/append/finalize/cancel forward to recordingService', async () => {
+    const { handlers, recordingService } = registerWithHandlers();
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(false),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
+
+    const begin = await handlers.get('recording:begin')!(
+      { sender },
+      { takeId: 'take-x', suffix: 'screen', folder: '/tmp' }
+    );
+    expect(begin).toEqual({ tempPath: '/tmp/x.part', finalPath: '/tmp/x.webm' });
+    expect(recordingService.beginRecording).toHaveBeenCalledWith({
+      takeId: 'take-x',
+      suffix: 'screen',
+      folder: '/tmp',
+      extension: undefined
+    });
+
+    const append = await handlers.get('recording:append')!(
+      { sender },
+      { takeId: 'take-x', suffix: 'screen', data: new Uint8Array([1, 2, 3]) }
+    );
+    expect(append).toEqual({ bytesWritten: 10 });
+    expect(recordingService.appendRecordingChunk).toHaveBeenCalled();
+
+    const finalized = await handlers.get('recording:finalize')!(
+      { sender },
+      { takeId: 'take-x', suffix: 'screen' }
+    );
+    expect(finalized).toEqual({ path: '/tmp/x.webm', bytesWritten: 10 });
+
+    const cancelled = await handlers.get('recording:cancel')!(
+      { sender },
+      { takeId: 'take-x', suffix: 'screen' }
+    );
+    expect(cancelled).toEqual({ cancelled: true });
+  });
+
+  test('recording:append rejects when data is missing', async () => {
+    const { handlers } = registerWithHandlers();
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(false),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
+
+    await expect(
+      handlers.get('recording:append')!({ sender }, { takeId: 'take-x', suffix: 'screen' })
+    ).rejects.toThrow(/missing recording chunk data/i);
+  });
+
+  test('recording:list-orphans returns [] when folder is empty/invalid', async () => {
+    const { handlers } = registerWithHandlers();
+    const sender = {
+      send: vi.fn(),
+      isDestroyed: vi.fn().mockReturnValue(false),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
+
+    expect(await handlers.get('recording:list-orphans')!({ sender }, '')).toEqual([]);
+    expect(await handlers.get('recording:list-orphans')!({ sender }, undefined)).toEqual([]);
   });
 });

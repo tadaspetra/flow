@@ -8,5 +8,7 @@ dist-smoke
 src/renderer/styles/main.css
 
 .claude/worktrees/*
-pnpm-lock.yaml
+# This repo is pnpm-only (AGENTS.md). Keep pnpm-lock.yaml tracked for
+# reproducible CI installs; ignore the npm lockfile so it cannot be
+# re-introduced accidentally.
 package-lock.json
