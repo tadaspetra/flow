@@ -107,6 +107,18 @@ describe('main/services/preview-render-service', () => {
       expect(computeTimelineHash(newerScreen)).not.toBe(computeTimelineHash(base));
     });
 
+    test('changes when cameraMirror toggles so a cached preview is invalidated', () => {
+      const base = defaultHashInput();
+      const unmirrored = { ...base, cameraMirror: false };
+      expect(computeTimelineHash(unmirrored)).not.toBe(computeTimelineHash(base));
+    });
+
+    test('omitting cameraMirror matches cameraMirror:true (legacy default)', () => {
+      const base = defaultHashInput();
+      const explicit = { ...base, cameraMirror: true };
+      expect(computeTimelineHash(base)).toBe(computeTimelineHash(explicit));
+    });
+
     test('is 16 hex characters long regardless of input size', () => {
       const short = computeTimelineHash(defaultHashInput());
       const big = computeTimelineHash({
@@ -214,6 +226,41 @@ describe('main/services/preview-render-service', () => {
       // Audio is off for the preview so the render finishes faster and
       // matches preview-only use (not final export).
       expect(calls[0].exportAudioPreset).toBe('off');
+
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    test('forwards cameraMirror to renderComposite so the preview matches the project setting', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preview-mirror-'));
+      const hash = 'mirrorhashonef00';
+      const previewPath = derivePreviewPath(dir, hash);
+
+      const received: Array<Record<string, unknown>> = [];
+      await generatePreview(
+        {
+          projectFolder: dir,
+          timelineHash: hash,
+          takes: [],
+          sections: [{ takeId: 'take-1', sourceStart: 0, sourceEnd: 1 }],
+          keyframes: [],
+          pipSize: 400,
+          screenFitMode: 'fill',
+          cameraSyncOffsetMs: 0,
+          sourceWidth: 1920,
+          sourceHeight: 1080,
+          cameraMirror: false
+        },
+        {
+          renderComposite: (async (opts: Record<string, unknown>) => {
+            received.push(opts);
+            fs.writeFileSync(previewPath, 'rendered', 'utf8');
+            return previewPath;
+          }) as unknown as typeof import('../../src/main/services/render-service').renderComposite
+        }
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0].cameraMirror).toBe(false);
 
       fs.rmSync(dir, { recursive: true, force: true });
     });

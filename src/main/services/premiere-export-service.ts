@@ -48,6 +48,9 @@ export interface PremiereExportOptions {
   sourceWidth: number;
   sourceHeight: number;
   cameraSyncOffsetMs: number;
+  // Defaults to true to preserve historical selfie-mirror behavior when the
+  // caller has not yet plumbed the setting through.
+  cameraMirror?: boolean;
   takes: PremiereExportTakeInput[];
   sections: PremiereExportSectionInput[];
   keyframes: Keyframe[];
@@ -139,10 +142,13 @@ function buildCameraTranscodeArgs(
   inputPath: string,
   outputPath: string,
   cameraSyncOffsetMs: number,
-  includeAudio: boolean
+  includeAudio: boolean,
+  mirror: boolean
 ): string[] {
-  // Mirror horizontally only; preserve native dimensions so the user can
-  // expand / re-crop the full camera frame in Premiere.
+  // Preserve native dimensions so the user can expand / re-crop the full
+  // camera frame in Premiere. Horizontal mirroring is optional so projects
+  // that disable selfie-mirror do not get a flipped asset shipped to the
+  // NLE.
   const offsetSec = normalizeCameraSyncOffsetMs(cameraSyncOffsetMs) / 1000;
   const args = [
     '-progress',
@@ -154,7 +160,8 @@ function buildCameraTranscodeArgs(
   if (Math.abs(offsetSec) > 0.0005) {
     args.push('-itsoffset', (-offsetSec).toFixed(3));
   }
-  args.push('-i', inputPath, '-map', '0:v:0?', '-vf', 'hflip,setsar=1');
+  const videoFilter = mirror ? 'hflip,setsar=1' : 'setsar=1';
+  args.push('-i', inputPath, '-map', '0:v:0?', '-vf', videoFilter);
   if (includeAudio) {
     // Camera file owns the mic for this take; preserve it so Premiere can
     // import the PiP clip with its built-in audio track.
@@ -351,7 +358,8 @@ export async function exportPremiereProject(
         job.inputPath,
         job.outputPath,
         opts.cameraSyncOffsetMs,
-        job.includeCameraAudio === true
+        job.includeCameraAudio === true,
+        opts.cameraMirror !== false
       );
     } else {
       args = buildAudioTranscodeArgs(job.inputPath, job.outputPath);

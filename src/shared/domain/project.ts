@@ -72,6 +72,12 @@ export interface ProjectSettings {
   // screen video. Sticky per project so toggling during editing does not
   // silently disable system audio on the next recording.
   systemAudioEnabled: boolean;
+  // Whether the camera is mirrored horizontally (selfie-style) everywhere the
+  // camera is shown: live preview, timeline preview render, final render, and
+  // Premiere export. Defaults to true to preserve the historical behavior of
+  // the app, where webcam previews always mirrored so on-screen text matched
+  // the presenter's intent.
+  cameraMirror: boolean;
 }
 
 export type AudioSource = 'screen' | 'camera' | 'external';
@@ -340,7 +346,8 @@ export function createDefaultProject(name: unknown = 'Untitled Project'): Projec
       exportVideoPreset: EXPORT_VIDEO_PRESET_QUALITY,
       cameraSyncOffsetMs: 0,
       pipSize: DEFAULT_PIP_SIZE,
-      systemAudioEnabled: false
+      systemAudioEnabled: false,
+      cameraMirror: true
     },
     takes: [],
     timeline: {
@@ -384,7 +391,8 @@ export function normalizeProjectData(rawProject: unknown, projectFolder?: string
       exportVideoPreset: normalizeExportVideoPreset(rawSettings.exportVideoPreset),
       cameraSyncOffsetMs: normalizeCameraSyncOffsetMs(rawSettings.cameraSyncOffsetMs),
       pipSize: normalizePipSize(rawSettings.pipSize),
-      systemAudioEnabled: rawSettings.systemAudioEnabled === true
+      systemAudioEnabled: rawSettings.systemAudioEnabled === true,
+      cameraMirror: rawSettings.cameraMirror !== false
     },
     takes: rawTakes.map((rawTake, index) => {
       const take = isRecord(rawTake) ? (rawTake as PartialTakeInput) : ({} as PartialTakeInput);

@@ -62,6 +62,7 @@ export interface ComputeTimelineHashInput {
   cameraSyncOffsetMs: number;
   sourceWidth: number;
   sourceHeight: number;
+  cameraMirror?: boolean;
 }
 
 function round(value: unknown, digits = 3): number {
@@ -130,7 +131,11 @@ export function computeTimelineHash(input: ComputeTimelineHashInput): string {
     fit: input?.screenFitMode === 'fit' ? 'fit' : 'fill',
     camSync: Math.round(Number(input?.cameraSyncOffsetMs) || 0),
     w: Math.round(Number(input?.sourceWidth) || 0),
-    h: Math.round(Number(input?.sourceHeight) || 0)
+    h: Math.round(Number(input?.sourceHeight) || 0),
+    // Including the mirror flag in the hash ensures that toggling the
+    // camera orientation invalidates any cached preview so the next render
+    // actually reflects the new setting.
+    camMirror: input?.cameraMirror !== false
   };
 
   return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 16);
@@ -159,6 +164,7 @@ export interface GeneratePreviewOpts {
   cameraSyncOffsetMs: number;
   sourceWidth: number;
   sourceHeight: number;
+  cameraMirror?: boolean;
 }
 
 export interface GeneratePreviewResult {
@@ -213,6 +219,7 @@ export async function generatePreview(
       exportAudioPreset,
       exportVideoPreset,
       cameraSyncOffsetMs: opts.cameraSyncOffsetMs,
+      cameraMirror: opts.cameraMirror,
       sourceWidth: opts.sourceWidth,
       sourceHeight: opts.sourceHeight,
       outputPath: previewPath
