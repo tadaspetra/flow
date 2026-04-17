@@ -206,6 +206,32 @@ describe('shared/domain/project', () => {
     expect(normalizePipSize(600.6)).toBe(601);
   });
 
+  test('cameraMirror defaults to true and tolerates only an explicit false to disable', () => {
+    expect(createDefaultProject('Demo').settings.cameraMirror).toBe(true);
+
+    const missing = normalizeProjectData({ settings: {} }, '/tmp/proj');
+    expect(missing.settings.cameraMirror).toBe(true);
+
+    const disabled = normalizeProjectData(
+      { settings: { cameraMirror: false } },
+      '/tmp/proj'
+    );
+    expect(disabled.settings.cameraMirror).toBe(false);
+
+    // Any value other than an explicit boolean false keeps the historical
+    // mirrored behavior so existing projects do not silently un-mirror.
+    const truthy = normalizeProjectData(
+      { settings: { cameraMirror: 'yes' as unknown as boolean } },
+      '/tmp/proj'
+    );
+    const nullish = normalizeProjectData(
+      { settings: { cameraMirror: null as unknown as boolean } },
+      '/tmp/proj'
+    );
+    expect(truthy.settings.cameraMirror).toBe(true);
+    expect(nullish.settings.cameraMirror).toBe(true);
+  });
+
   test('normalizeProjectData preserves valid pipSize and defaults invalid values', () => {
     const sized = normalizeProjectData({ settings: { pipSize: 500 } }, '/tmp/proj');
     const fallback = normalizeProjectData({ settings: { pipSize: 'huge' } }, '/tmp/proj');

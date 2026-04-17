@@ -59,6 +59,10 @@ export interface RenderCompositeOptions {
   exportAudioPreset?: ExportAudioPreset;
   exportVideoPreset?: ExportVideoPreset;
   cameraSyncOffsetMs?: number;
+  // Whether the camera should be mirrored horizontally in the composite.
+  // Defaults to true to preserve historical behavior for legacy callers that
+  // do not plumb this option through.
+  cameraMirror?: boolean;
   sourceWidth?: number;
   sourceHeight?: number;
   outputFolder?: string;
@@ -574,6 +578,7 @@ export async function renderComposite(
   const keyframes = Array.isArray(opts.keyframes) ? opts.keyframes : [];
   const pipSize = Number.isFinite(Number(opts.pipSize)) ? Number(opts.pipSize) : 422;
   const screenFitMode = opts.screenFitMode === 'fit' ? 'fit' : 'fill';
+  const cameraMirror = opts.cameraMirror !== false;
   const exportAudioPreset = normalizeExportAudioPreset(opts.exportAudioPreset);
   const exportVideoPreset = normalizeExportVideoPreset(opts.exportVideoPreset);
   const cameraSyncOffsetMs = normalizeCameraSyncOffsetMs(opts.cameraSyncOffsetMs);
@@ -813,7 +818,8 @@ export async function renderComposite(
       sourceHeight,
       canvasW,
       canvasH,
-      targetFps
+      targetFps,
+      cameraMirror
     );
     assertOverlayFilterSize(overlayFilter);
     const adaptedOverlay = overlayFilter

@@ -227,6 +227,34 @@ describe('main/services/premiere-export-service', () => {
     expect(updates.some((u) => u.phase === 'finalizing' && u.percent === 1)).toBe(true);
   });
 
+  test('exportPremiereProject omits hflip from camera transcode when cameraMirror is false', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'premiere-export-nomirror-'));
+    const calls: FfmpegCall[] = [];
+    const opts = makeBaseOpts(tmpDir, { cameraMirror: false });
+
+    await exportPremiereProject(opts, {
+      ffmpegPath: '/usr/bin/ffmpeg',
+      probeVideoFpsWithFfmpeg: async () => 30,
+      probeVideoDimensionsWithFfmpeg: async () => ({ width: 1920, height: 1080 }),
+      runFfmpeg: createRunFfmpegStub(calls, (call) => {
+        const outPath = call.args[call.args.length - 1];
+        if (outPath && outPath.endsWith('.mov')) {
+          fs.mkdirSync(path.dirname(outPath), { recursive: true });
+          fs.writeFileSync(outPath, 'prores-data', 'utf8');
+        }
+      })
+    });
+
+    const cameraCall = calls.find((c) => c.args.join(' ').includes('camera-take-1.mov'));
+    expect(cameraCall).toBeDefined();
+    const joined = cameraCall!.args.join(' ');
+    // hflip must be absent when the project disables selfie-mirror, otherwise
+    // the Premiere-ready asset ships flipped contrary to the user's choice.
+    expect(joined).not.toContain('hflip');
+    // setsar=1 is still applied so downstream NLE sample aspect ratio is sane.
+    expect(joined).toContain('setsar=1');
+  });
+
   test('exportPremiereProject dedupes ffmpeg jobs for repeated takes across sections', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'premiere-export-dedupe-'));
     const calls: FfmpegCall[] = [];

@@ -42,7 +42,7 @@ import {
   createScreenRecordingStream
 } from './features/recording/recorder-utils';
 import { resolveTakeAudio } from '../shared/domain/take-audio';
-import { drawMirroredImage, getCenteredSquareCropRect } from './features/camera/camera-render';
+import { drawCameraImage, getCenteredSquareCropRect } from './features/camera/camera-render';
 import { cleanupAllMedia } from './features/media-cleanup';
 
 const projectHomeView = document.getElementById('projectHomeView');
@@ -72,6 +72,7 @@ const screenSelect = document.getElementById('screenSource');
 const screenFitSelect = document.getElementById('screenFit');
 const systemAudioCheckbox = document.getElementById('systemAudioCheckbox');
 const cameraSelect = document.getElementById('cameraSource');
+const cameraMirrorCheckbox = document.getElementById('cameraMirrorCheckbox');
 const audioSelect = document.getElementById('audioSource');
 const canvas = document.getElementById('compositeCanvas');
 const ctx = canvas.getContext('2d');
@@ -906,7 +907,8 @@ function buildProjectSavePayload() {
       exportVideoPreset: normalizeExportVideoPreset(exportVideoPresetSelect.value),
       cameraSyncOffsetMs: normalizeCameraSyncOffsetMs(cameraSyncOffsetInput.value),
       pipSize: editorState?.pipSize || PIP_SIZE,
-      systemAudioEnabled: !!systemAudioCheckbox?.checked
+      systemAudioEnabled: !!systemAudioCheckbox?.checked,
+      cameraMirror: cameraMirrorCheckbox ? cameraMirrorCheckbox.checked : true
     },
     timeline: getProjectTimelineSnapshot()
   };
@@ -1082,6 +1084,7 @@ function buildPreviewInputs() {
     pipSize: editorState.pipSize,
     screenFitMode: editorState.screenFitMode,
     cameraSyncOffsetMs: editorState.cameraSyncOffsetMs,
+    cameraMirror: editorState.cameraMirror !== false,
     sourceWidth: editorState.sourceWidth || CANVAS_W,
     sourceHeight: editorState.sourceHeight || CANVAS_H
   };
@@ -1125,7 +1128,8 @@ function schedulePreviewRender() {
         fit: inputs.screenFitMode === 'fit' ? 'fit' : 'fill',
         camSync: Math.round(inputs.cameraSyncOffsetMs || 0),
         w: Math.round(inputs.sourceWidth || 0),
-        h: Math.round(inputs.sourceHeight || 0)
+        h: Math.round(inputs.sourceHeight || 0),
+        camMirror: inputs.cameraMirror !== false
       });
       const buffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
       const hex = Array.from(new Uint8Array(buffer))
@@ -1149,6 +1153,7 @@ function schedulePreviewRender() {
         pipSize: inputs.pipSize,
         screenFitMode: inputs.screenFitMode,
         cameraSyncOffsetMs: inputs.cameraSyncOffsetMs,
+        cameraMirror: inputs.cameraMirror !== false,
         sourceWidth: inputs.sourceWidth,
         sourceHeight: inputs.sourceHeight
       });
@@ -1334,6 +1339,12 @@ async function activateProject(projectPath, project, preferredView = 'recording'
   if (systemAudioCheckbox) {
     systemAudioCheckbox.checked = project.settings?.systemAudioEnabled === true;
   }
+  if (cameraMirrorCheckbox) {
+    // cameraMirror defaults to true so legacy projects that never stored the
+    // flag keep the historical selfie-mirror behavior. Only an explicit false
+    // flips the checkbox off.
+    cameraMirrorCheckbox.checked = project.settings?.cameraMirror !== false;
+  }
   exportAudioPresetSelect.value = normalizeExportAudioPreset(project.settings?.exportAudioPreset);
   exportVideoPresetSelect.value = normalizeExportVideoPreset(project.settings?.exportVideoPreset);
   cameraSyncOffsetInput.value = String(
@@ -1354,6 +1365,7 @@ async function activateProject(projectPath, project, preferredView = 'recording'
       sourceWidth: project.timeline.sourceWidth || null,
       sourceHeight: project.timeline.sourceHeight || null,
       cameraSyncOffsetMs: project.settings?.cameraSyncOffsetMs,
+      cameraMirror: project.settings?.cameraMirror !== false,
       initialView: preferredView === 'recording' ? 'recording' : 'timeline'
     });
   } else {
@@ -2170,7 +2182,7 @@ function getRenderSections() {
 }
 
 // ===== Shared drawPip function =====
-function drawPip(targetCtx, video, pipX, pipY, pipW, pipH) {
+function drawPip(targetCtx, video, pipX, pipY, pipW, pipH, mirror = true) {
   const r = 12;
   targetCtx.save();
   targetCtx.beginPath();
@@ -2192,7 +2204,7 @@ function drawPip(targetCtx, video, pipX, pipY, pipW, pipH) {
     targetCtx.restore();
     return;
   }
-  drawMirroredImage(
+  drawCameraImage(
     targetCtx,
     video,
     crop.sourceX,
@@ -2202,12 +2214,13 @@ function drawPip(targetCtx, video, pipX, pipY, pipW, pipH) {
     pipX,
     pipY,
     pipW,
-    pipH
+    pipH,
+    mirror
   );
   targetCtx.restore();
 }
 
-function drawCameraRect(targetCtx, video, x, y, w, h, r) {
+function drawCameraRect(targetCtx, video, x, y, w, h, r, mirror = true) {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
@@ -2233,7 +2246,7 @@ function drawCameraRect(targetCtx, video, x, y, w, h, r) {
   const dh = vh * scale;
   const dx = x + (w - dw) / 2;
   const dy = y + (h - dh) / 2;
-  drawMirroredImage(targetCtx, video, 0, 0, vw, vh, dx, dy, dw, dh);
+  drawCameraImage(targetCtx, video, 0, 0, vw, vh, dx, dy, dw, dh, mirror);
   targetCtx.restore();
 }
 
@@ -2437,17 +2450,19 @@ function drawComposite(now = performance.now()) {
 
   const drawScreen = screenFitSelect.value === 'fill' ? drawFill : drawFit;
 
+  const mirrorCamera = cameraMirrorCheckbox ? cameraMirrorCheckbox.checked : true;
+
   if (hasScreen && hasCamera) {
     drawScreen(ctx, screenVideo, 0, 0, CANVAS_W, CANVAS_H);
     const pipW = PIP_SIZE;
     const pipH = pipW;
     const pipX = CANVAS_W - pipW - PIP_MARGIN;
     const pipY = CANVAS_H - pipH - PIP_MARGIN;
-    drawPip(ctx, cameraVideo, pipX, pipY, pipW, pipH);
+    drawPip(ctx, cameraVideo, pipX, pipY, pipW, pipH, mirrorCamera);
   } else if (hasScreen) {
     drawScreen(ctx, screenVideo, 0, 0, CANVAS_W, CANVAS_H);
   } else if (hasCamera) {
-    drawFit(ctx, cameraVideo, 0, 0, CANVAS_W, CANVAS_H);
+    drawFit(ctx, cameraVideo, 0, 0, CANVAS_W, CANVAS_H, mirrorCamera);
   }
 
   drawRAF = requestAnimationFrame(drawComposite);
@@ -2461,7 +2476,7 @@ function getSourceHeight(source) {
   return source.videoHeight || source.naturalHeight || source.height || 0;
 }
 
-function drawFit(targetCtx, video, x, y, w, h) {
+function drawFit(targetCtx, video, x, y, w, h, mirror = false) {
   const vw = getSourceWidth(video);
   const vh = getSourceHeight(video);
   if (!vw || !vh) return;
@@ -2470,7 +2485,7 @@ function drawFit(targetCtx, video, x, y, w, h) {
   const dh = vh * scale;
   const dx = x + (w - dw) / 2;
   const dy = y + (h - dh) / 2;
-  targetCtx.drawImage(video, dx, dy, dw, dh);
+  drawCameraImage(targetCtx, video, 0, 0, vw, vh, dx, dy, dw, dh, mirror);
 }
 
 function drawFill(targetCtx, video, x, y, w, h) {
@@ -4218,6 +4233,12 @@ function enterEditor(rawSections, opts = {}) {
     renderProgress: 0,
     playbackSpeed: 1,
     cameraSyncOffsetMs: normalizeCameraSyncOffsetMs(opts.cameraSyncOffsetMs),
+    cameraMirror:
+      typeof opts.cameraMirror === 'boolean'
+        ? opts.cameraMirror
+        : cameraMirrorCheckbox
+          ? cameraMirrorCheckbox.checked
+          : true,
     hasCamera: typeof opts.hasCamera === 'boolean' ? opts.hasCamera : false,
     sourceWidth: opts.sourceWidth || null,
     sourceHeight: opts.sourceHeight || null
@@ -4775,6 +4796,7 @@ function editorDrawLoop() {
   }
 
   if (hasCamera) {
+    const mirrorCamera = editorState.cameraMirror !== false;
     if (state.camTransition > 0 && state.opacity > 0) {
       editorCtx.save();
       if (state.opacity < 1) editorCtx.globalAlpha = state.opacity;
@@ -4784,7 +4806,7 @@ function editorDrawLoop() {
       const camW = editorState.pipSize + (CANVAS_W - editorState.pipSize) * t;
       const camH = editorState.pipSize + (CANVAS_H - editorState.pipSize) * t;
       const camR = 12 * (1 - t);
-      drawCameraRect(editorCtx, activeVideos.camera, camX, camY, camW, camH, camR);
+      drawCameraRect(editorCtx, activeVideos.camera, camX, camY, camW, camH, camR, mirrorCamera);
       editorCtx.restore();
     } else if (state.opacity > 0) {
       editorCtx.save();
@@ -4795,7 +4817,8 @@ function editorDrawLoop() {
         state.pipX,
         state.pipY,
         editorState.pipSize,
-        editorState.pipSize
+        editorState.pipSize,
+        mirrorCamera
       );
       editorCtx.restore();
     }
@@ -5435,6 +5458,7 @@ async function renderVideo() {
       exportAudioPreset: normalizeExportAudioPreset(exportAudioPresetSelect.value),
       exportVideoPreset: normalizeExportVideoPreset(exportVideoPresetSelect.value),
       cameraSyncOffsetMs: editorState.cameraSyncOffsetMs,
+      cameraMirror: editorState.cameraMirror !== false,
       sourceWidth: editorState.sourceWidth || CANVAS_W,
       sourceHeight: editorState.sourceHeight || CANVAS_H,
       outputFolder: saveFolder
@@ -5550,6 +5574,7 @@ async function exportPremiere() {
       sourceWidth: editorState.sourceWidth || CANVAS_W,
       sourceHeight: editorState.sourceHeight || CANVAS_H,
       cameraSyncOffsetMs: editorState.cameraSyncOffsetMs,
+      cameraMirror: editorState.cameraMirror !== false,
       takes,
       sections: premiereSections,
       keyframes: getRenderKeyframes()
@@ -5763,6 +5788,29 @@ screenFitSelect.addEventListener('change', () => {
   updatePreview();
   scheduleProjectSave();
 });
+
+if (cameraMirrorCheckbox) {
+  cameraMirrorCheckbox.addEventListener('change', () => {
+    const mirror = !!cameraMirrorCheckbox.checked;
+    if (activeProject?.settings) {
+      activeProject.settings.cameraMirror = mirror;
+    }
+    if (editorState) {
+      editorState.cameraMirror = mirror;
+      // Force editor preview to repaint with the new orientation and
+      // invalidate the cached preview so the next scheduled render does not
+      // reuse a previously mirrored (or un-mirrored) clip.
+      invalidatePreviewCache();
+      try {
+        editorSeek(editorState.currentTime);
+      } catch (_e) {
+        // editor may not be mounted yet; the next updatePreview() is enough.
+      }
+    }
+    updatePreview();
+    scheduleProjectSave();
+  });
+}
 
 screenSelect.addEventListener('change', async () => {
   try {

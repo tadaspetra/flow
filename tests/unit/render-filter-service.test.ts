@@ -169,6 +169,97 @@ describe('main/services/render-filter-service', () => {
     expect(filter).toContain('[with_pip][camfull]overlay=0:0:format=auto[out]');
   });
 
+  test('buildFilterComplex omits hflip when cameraMirror is false (PiP only)', () => {
+    const filter = buildFilterComplex(
+      [
+        {
+          time: 0,
+          pipX: 100,
+          pipY: 100,
+          pipVisible: true,
+          cameraFullscreen: false,
+          backgroundZoom: 1,
+          backgroundPanX: 0,
+          backgroundPanY: 0
+        }
+      ] as Keyframe[],
+      320,
+      'fill',
+      1920,
+      1080,
+      1920,
+      1080,
+      30,
+      false
+    );
+    expect(filter).toContain('[1:v]setpts=PTS-STARTPTS,crop=');
+    expect(filter).not.toContain('hflip');
+  });
+
+  test('buildFilterComplex omits hflip when cameraMirror is false (fullscreen + PiP)', () => {
+    const filter = buildFilterComplex(
+      [
+        {
+          time: 0,
+          pipX: 100,
+          pipY: 100,
+          pipVisible: true,
+          cameraFullscreen: false,
+          backgroundZoom: 1,
+          backgroundPanX: 0,
+          backgroundPanY: 0
+        },
+        {
+          time: 2,
+          pipX: 120,
+          pipY: 120,
+          pipVisible: true,
+          cameraFullscreen: true,
+          backgroundZoom: 1,
+          backgroundPanX: 0,
+          backgroundPanY: 0
+        }
+      ] as Keyframe[],
+      320,
+      'fill',
+      1920,
+      1080,
+      1920,
+      1080,
+      30,
+      false
+    );
+    expect(filter).toContain('[1:v]setpts=PTS-STARTPTS,split[cam1][cam2]');
+    expect(filter).not.toContain('hflip');
+  });
+
+  test('buildFilterComplex omits hflip when cameraMirror is false (fullscreen only)', () => {
+    const filter = buildFilterComplex(
+      [
+        {
+          time: 0,
+          pipX: 100,
+          pipY: 100,
+          pipVisible: false,
+          cameraFullscreen: true,
+          backgroundZoom: 1,
+          backgroundPanX: 0,
+          backgroundPanY: 0
+        }
+      ] as Keyframe[],
+      320,
+      'fill',
+      1920,
+      1080,
+      1920,
+      1080,
+      30,
+      false
+    );
+    expect(filter).toContain('[1:v]setpts=PTS-STARTPTS,scale=');
+    expect(filter).not.toContain('hflip');
+  });
+
   test('buildFilterComplex scales screen into the editor canvas', () => {
     const filter = buildFilterComplex(
       [
